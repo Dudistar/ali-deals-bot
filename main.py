@@ -10,7 +10,7 @@ from telebot import types
 from PIL import Image, ImageDraw, ImageFont
 from deep_translator import GoogleTranslator
 
-# --- הפרטים המדויקים שלך ---
+# --- המפתחות שלך ---
 BOT_TOKEN = "8575064945:AAH_2WmHMH25TMFvt4FM6OWwfqFcDAaqCPw"
 APP_KEY = "523460"
 APP_SECRET = "Co7bNfYfqlu8KTdj2asXQV78oziICQEs"
@@ -23,7 +23,6 @@ def generate_sign(params):
     return hashlib.md5(s.encode('utf-8')).hexdigest().upper()
 
 def get_short_link(raw_url):
-    """קיצור קישור מהיר למניעת תקיעה"""
     try:
         time.sleep(0.3) 
         params = {
@@ -40,7 +39,6 @@ def get_short_link(raw_url):
     return raw_url
 
 def search_aliexpress(keyword):
-    """חיפוש חכם עם 'רשת ביטחון'"""
     try:
         en_keyword = GoogleTranslator(source='auto', target='en').translate(keyword).lower()
         params = {
@@ -55,15 +53,15 @@ def search_aliexpress(keyword):
         products_raw = resp.get('aliexpress_affiliate_product_query_response', {}).get('resp_result', {}).get('result', {}).get('products', {}).get('product', [])
         if isinstance(products_raw, dict): products_raw = [products_raw]
 
-        bad_words = ['case', 'cover', 'part', 'adapter', 'cable', 'mount', 'holder']
-        results, trash = [], []
+        bad_words = ['case', 'cover', 'adapter', 'cable', 'mount']
+        results, backup = [], []
         for p in products_raw:
             title = p.get('product_title', '').lower()
             is_bad = any(bw in title for bw in bad_words) and not any(bw in en_keyword for bw in bad_words)
             if not is_bad: results.append(p)
-            else: trash.append(p)
+            else: backup.append(p)
 
-        final_list = (results + trash)[:4]
+        final_list = (results + backup)[:4]
         output = []
         for p in final_list:
             try: title_he = GoogleTranslator(source='auto', target='iw').translate(p['product_title'])
@@ -75,7 +73,7 @@ def search_aliexpress(keyword):
             except: rate = 4.8
 
             output.append({
-                "title": title_he[:55] + "...", "price": p.get('target_sale_price', 'N/A'),
+                "title": title_he[:50] + "...", "price": p.get('target_sale_price', 'N/A'),
                 "image": p.get('product_main_image_url'), "raw_url": p.get('product_detail_url', ''),
                 "rating": rate, "orders": p.get('lastest_volume', "Top"), "discount": p.get('discount', '0%')
             })
@@ -83,47 +81,50 @@ def search_aliexpress(keyword):
     except: return None
 
 def create_collage(image_urls):
-    """קולאז' עם פתרון וודאי למספרים גדולים"""
     images = []
     for url in image_urls:
         try:
-            r = requests.get(url, timeout=8)
+            r = requests.get(url, timeout=7)
             img = Image.open(io.BytesIO(r.content)).convert('RGB').resize((500,500))
             images.append(img)
         except: images.append(Image.new('RGB', (500,500), color='#EEEEEE'))
     while len(images) < 4: images.append(Image.new('RGB', (500,500), color='#EEEEEE'))
-
+    
     collage = Image.new('RGB', (1000, 1000), 'white')
     positions = [(0,0), (500,0), (0,500), (500,500)]
     draw = ImageDraw.Draw(collage)
 
-    # ניסיון לטעון פונט מכמה נתיבים שונים שקיימים ב-Railway
+    # פתרון פונט גנרי ללינוקס כדי להבטיח הופעת מספרים
     font = None
-    font_paths = [
+    potential_fonts = [
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
         "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
         "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf"
     ]
-    for path in font_paths:
-        if os.path.exists(path):
+    for p in potential_fonts:
+        if os.path.exists(p):
             try:
-                font = ImageFont.truetype(path, 160)
+                font = ImageFont.truetype(p, 160)
                 break
-            except: continue
+            except: pass
     
-    if not font:
+    if font is None:
         font = ImageFont.load_default()
 
     for i, img in enumerate(images):
         collage.paste(img, positions[i])
         cx, cy = positions[i][0]+30, positions[i][1]+30
-        # ציור העיגול הצהוב
+        
+        # ציור העיגול
         draw.ellipse((cx, cy, cx+160, cy+160), fill="#FFD700", outline="black", width=10)
-        # הוספת המספר עם בדיקת מיקום לדיוק מירבי
-        draw.text((cx+45, cy-10), str(i+1), fill="black", font=font)
+        
+        # כתיבת המספר - מירכוז משופר
+        msg = str(i+1)
+        # חישוב מרכז לעיגול
+        draw.text((cx + 45, cy - 15), msg, fill="black", font=font)
 
     output = io.BytesIO()
-    collage.save(output, format='JPEG', quality=90)
+    collage.save(output, format='JPEG', quality=85)
     output.seek(0)
     return output
 
@@ -136,11 +137,11 @@ def handle_message(message):
             return
 
         search_query = query[7:].strip()
-        loading = bot.send_message(message.chat.id, f"🔎 מחפש עבורכם דילים ל-'{search_query}'...")
+        loading = bot.send_message(message.chat.id, f"🔎 מחפש דילים ל-'{search_query}'...")
         products = search_aliexpress(search_query)
 
         if not products:
-            bot.edit_message_text("לא נמצאו תוצאות. נסו חיפוש אחר.", message.chat.id, loading.message_id)
+            bot.edit_message_text("לא נמצאו תוצאות כרגע.", message.chat.id, loading.message_id)
             return
 
         collage = create_collage([p['image'] for p in products])
@@ -152,11 +153,11 @@ def handle_message(message):
         for i, p in enumerate(products):
             short_url = get_short_link(p['raw_url'])
             text_msg += f"{i+1}. 🏆 <b>{html.escape(p['title'])}</b>\n"
-            text_msg += f"🔥 הנחה: <b>-{p['discount']}</b> | 💰 מחיר: <b>{p['price']}₪</b>\n"
+            text_msg += f"🔥 הנחה באתר: <b>-{p['discount']}</b>\n💰 מחיר: <b>{p['price']}₪</b>\n"
             text_msg += f"⭐ דירוג: {p['rating']}/5 | 🛒 רכישות: {p['orders']}\n🔗 {short_url}\n\n"
             buttons.append(types.InlineKeyboardButton(text=f"🎁 לקנייה {i+1}", url=short_url))
 
-        text_msg += "▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n🤖 <i>DrDeals</i>"
+        text_msg += "▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n🤖 <i>צייד הדילים - DrDeals</i>"
         markup.add(*buttons)
         bot.send_message(message.chat.id, text_msg, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
     except: pass
