@@ -3,7 +3,6 @@ import requests
 import io
 import hashlib
 import time
-import json
 import html
 from telebot import types
 from PIL import Image, ImageDraw, ImageFont
@@ -91,15 +90,12 @@ def search_aliexpress(keyword):
         for p in products:
             title = p.get('product_title', '')
             title_l = title.lower()
-
             score = 0
 
-            # רלוונטיות
             for w in kw_words:
                 if w in title_l:
                     score += 3
 
-            # עונש על אביזרים
             if any(b in title_l for b in bad_words) and not any(b in en_kw for b in bad_words):
                 score -= 4
 
@@ -130,15 +126,14 @@ def search_aliexpress(keyword):
                 "image": p.get('product_main_image_url'),
                 "url": p.get('product_detail_url', ''),
                 "rating": rating,
-                "orders": orders,
-                "discount": p.get('discount', '0%')
+                "orders": orders
             })
 
         return results
     except:
         return None
 
-# ================== קולאז' ==================
+# ================== קולאז' – WhatsApp Style ==================
 def create_collage(image_urls):
     imgs = []
     for url in image_urls:
@@ -155,16 +150,36 @@ def create_collage(image_urls):
     draw = ImageDraw.Draw(canvas)
 
     try:
-        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 220)
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 240)
     except:
         font = ImageFont.load_default()
 
     pos = [(0,0),(500,0),(0,500),(500,500)]
+    circle_size = 180
+    green = "#25D366"  # WhatsApp green
+
     for i, img in enumerate(imgs):
         canvas.paste(img, pos[i])
-        cx, cy = pos[i][0]+25, pos[i][1]+25
-        draw.ellipse((cx, cy, cx+200, cy+200), fill="#FFD700", outline="black", width=12)
-        draw.text((cx+50, cy+10), str(i+1), fill="black", font=font)
+        cx, cy = pos[i][0] + 20, pos[i][1] + 20
+
+        draw.ellipse(
+            (cx, cy, cx + circle_size, cy + circle_size),
+            fill=green,
+            outline="white",
+            width=8
+        )
+
+        num = str(i + 1)
+        bbox = draw.textbbox((0, 0), num, font=font)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        tx = cx + (circle_size - tw) // 2
+        ty = cy + (circle_size - th) // 2 - 10
+
+        # outline למספר
+        for dx, dy in [(-3,0),(3,0),(0,-3),(0,3)]:
+            draw.text((tx+dx, ty+dy), num, fill="black", font=font)
+
+        draw.text((tx, ty), num, fill="white", font=font)
 
     out = io.BytesIO()
     canvas.save(out, format='JPEG', quality=95)
@@ -202,7 +217,7 @@ def handle_message(m):
             f"⭐ דירוג: {p['rating']} | 🛒 {p['orders']} רכישות\n"
             f"🔗 {link}\n\n"
         )
-        kb.add(types.InlineKeyboardButton(f"🎁 לקנייה {i+1}", url=link))
+        kb.add(types.InlineKeyboardButton(f"🟢 קנייה {i+1}", url=link))
 
     text += "<i>DrDeals</i>"
     bot.send_message(m.chat.id, text, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=True)
