@@ -8,7 +8,7 @@ from telebot import types
 from PIL import Image, ImageDraw
 from deep_translator import GoogleTranslator
 
-# --- המפתחות האישיים שלך ---
+# --- הגדרות מערכת ---
 BOT_TOKEN = "8575064945:AAH_2WmHMH25TMFvt4FM6OWwfqFcDAaqCPw"
 APP_KEY = "523460"
 APP_SECRET = "Co7bNfYfqlu8KTdj2asXQV78oziICQEs"
@@ -21,10 +21,10 @@ def generate_sign(params):
     return hashlib.md5(s.encode('utf-8')).hexdigest().upper()
 
 def get_short_link(raw_url):
-    """קיצור קישור יציב בשיטת בונקר"""
+    """קיצור קישור יציב בשיטת 'אל כשל'"""
     try:
         clean_url = raw_url.split('?')[0]
-        time.sleep(2.2) 
+        time.sleep(2.5) # המתנה יציבה למקצוענות שיא
         params = {
             'app_key': APP_KEY, 'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
             'sign_method': 'md5', 'method': 'aliexpress.affiliate.link.generate',
@@ -32,7 +32,7 @@ def get_short_link(raw_url):
             'promotion_link_type': '0', 'source_values': clean_url, 'tracking_id': TRACKING_ID
         }
         params['sign'] = generate_sign(params)
-        resp = requests.post("https://api-sg.aliexpress.com/sync", data=params, timeout=15).json()
+        resp = requests.post("https://api-sg.aliexpress.com/sync", data=params, timeout=20).json()
         res = resp.get('aliexpress_affiliate_link_generate_response', {}).get('resp_result', {}).get('result', {}).get('promotion_links', {}).get('promotion_link', [])
         if res:
             return res[0].get('promotion_short_link') or res[0].get('promotion_link')
@@ -44,16 +44,17 @@ def search_aliexpress(keyword):
     try:
         en_keyword = GoogleTranslator(source='auto', target='en').translate(keyword).lower()
         
+        # סינון חכם למניעת 'שמאטע'
         min_price = "0"
         bad_words = ['adapter', 'cable', 'mount', 'rear view', 'borescope', 'parts', 'cover']
         
-        # זיהוי חכם לביטול סינונים בחיפושי מדבקות/עיצוב אישי
+        # בדיקה אם מדובר במדבקות או מוצרי DIY לביטול סינונים
         if any(w in en_keyword for w in ['stick', 'label', 'decal', 'custom', 'diy']):
             bad_words = [] 
             min_price = "0"
         elif any(w in en_keyword for w in ['camera', 'dash', 'car', 'dvr']):
             en_keyword = f"70mai DDPai Dash Cam 4K GPS {en_keyword}"
-            min_price = "60"
+            min_price = "65"
 
         params = {
             'app_key': APP_KEY, 'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
@@ -72,7 +73,7 @@ def search_aliexpress(keyword):
         for p in products_raw:
             title = p.get('product_title', '').lower()
             rating = float(str(p.get('evaluate_rate', '0')).replace('%', ''))
-            # סינון איכות: טכנולוגיה 90%, מוצרים אחרים 80%
+            # חסימת מוצרים עם דירוג נמוך למראה מקצועי
             min_rate = 90 if min_price != "0" else 80
             if not any(bw in title for bw in bad_words) and rating >= min_rate:
                 filtered.append(p)
@@ -86,14 +87,13 @@ def search_aliexpress(keyword):
                 "price": p.get('target_sale_price', 'N/A'),
                 "image": p.get('product_main_image_url'), 
                 "raw_url": p.get('product_detail_url', ''),
-                "rating": round(float(str(p.get('evaluate_rate', '95')).replace('%',''))/20, 1) if p.get('evaluate_rate') else 4.8,
-                "orders": p.get('lastest_volume', "100+")
+                "rating": round(float(str(p.get('evaluate_rate', '95')).replace('%',''))/20, 1) if p.get('evaluate_rate') else 4.8
             })
         return output
     except: return None
 
 def draw_elite_number(draw, cx, cy, num):
-    """מספרים מינימליסטיים בפינה"""
+    """מספרים יוקרתיים ומינימליסטיים בפינה"""
     draw.ellipse((cx, cy, cx+35, cy+35), fill="#FFD700", outline="black", width=2)
     bx, by = cx + 13, cy + 7
     if num == 1: draw.rectangle([bx+2, by, bx+6, by+22], fill="black")
@@ -133,11 +133,11 @@ def handle_message(message):
         if not query.lower().startswith("חפש לי"): return
         search_query = query[7:].strip().lower()
         
-        loading = bot.send_message(message.chat.id, f"💎 <b>שואב את הדילים המובחרים ביותר ל-'{search_query}'...</b>", parse_mode="HTML")
+        loading = bot.send_message(message.chat.id, f"💎 **שואב את הדילים הכי איכותיים ל-'{search_query}'...**", parse_mode="HTML")
         products = search_aliexpress(search_query)
         
         if not products:
-            bot.edit_message_text("לא נמצאו תוצאות איכותיות עם משלוח חינם. נסו חיפוש שונה.", message.chat.id, loading.message_id)
+            bot.edit_message_text("מצטער, לא נמצאו תוצאות איכותיות עם משלוח חינם.", message.chat.id, loading.message_id)
             return
 
         # הכנת הקישורים לפני שליחת התמונה למניעת תקיעה
@@ -145,29 +145,25 @@ def handle_message(message):
         
         collage = create_collage([p['image'] for p in products])
         bot.delete_message(message.chat.id, loading.message_id)
-        bot.send_photo(message.chat.id, collage, caption=f"🎯 <b>נבחרת הדילים עבור: {search_query}</b>", parse_mode="HTML")
+        bot.send_photo(message.chat.id, collage, caption=f"🎯 **נבחרת הדילים עבור: {search_query}**", parse_mode="HTML")
 
-        text_msg = "🏆 <b>TOP SELECTION - DrDeals Premium</b>\n" + "▬" * 15 + "\n\n"
+        text_msg = "🏆 **TOP SELECTION - DrDeals Premium**\n" + "▬" * 15 + "\n\n"
         markup = types.InlineKeyboardMarkup(row_width=2)
         buttons = []
         
         for i, p in enumerate(products):
             short_url = final_links[i]
-            text_msg += f"{i+1}. 🏆 <b>{html.escape(p['title'])}</b>\n"
-            text_msg += f"💰 מחיר: <b>{p['price']}₪</b> | ⭐ דירוג: <b>{p['rating']}</b>\n"
-            text_msg += f"🚚 <b>משלוח חינם!</b>\n"
+            text_msg += f"{i+1}. 🏆 **{html.escape(p['title'])}**\n"
+            text_msg += f"💰 מחיר: **{p['price']}₪** | ⭐ דירוג: **{p['rating']}**\n"
+            text_msg += f"🚚 **משלוח חינם!**\n"
             text_msg += f"🔗 {short_url}\n\n"
             buttons.append(types.InlineKeyboardButton(text=f"🎁 לקנייה {i+1}", url=short_url))
 
-        text_msg += "▬" * 15 + "\n👑 <b>Elite Search by DrDeals</b>"
+        text_msg += "▬" * 15 + "\n👑 **Elite Search by DrDeals**"
         markup.add(*buttons)
         bot.send_message(message.chat.id, text_msg, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
     except: pass
 
-# --- הפתרון הסופי לשגיאת 409 ---
-try:
-    bot.remove_webhook()
-    print("Bot is LIVE and cleaning old connections...")
-    bot.infinity_polling(timeout=60, long_polling_timeout=30)
-except Exception as e:
-    print(f"Polling error: {e}")
+# --- מנקה חיבורים קודמים למניעת שגיאת 409 ---
+bot.remove_webhook()
+bot.infinity_polling(timeout=60, long_polling_timeout=30)
