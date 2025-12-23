@@ -8,7 +8,7 @@ from telebot import types
 from PIL import Image, ImageDraw, ImageFont
 from deep_translator import GoogleTranslator
 
-# --- הפרטים המדויקים שלך ---
+# --- הפרטים שלך ---
 BOT_TOKEN = "8575064945:AAH_2WmHMH25TMFvt4FM6OWwfqFcDAaqCPw"
 APP_KEY = "523460"
 APP_SECRET = "Co7bNfYfqlu8KTdj2asXQV78oziICQEs"
@@ -22,8 +22,9 @@ def generate_sign(params):
     return hashlib.md5(s.encode('utf-8')).hexdigest().upper()
 
 def get_short_link(raw_url):
+    """קיצור קישור יציב עם השהייה של 0.5 שניות למניעת תקלות"""
     try:
-        time.sleep(0.3) 
+        time.sleep(0.5) 
         params = {
             'app_key': APP_KEY, 'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
             'sign_method': 'md5', 'method': 'aliexpress.affiliate.link.generate',
@@ -38,14 +39,15 @@ def get_short_link(raw_url):
     return raw_url
 
 def search_aliexpress(keyword, offset=0):
+    """חיפוש מקצועי המשלב רלוונטיות ומכירות"""
     try:
         en_keyword = GoogleTranslator(source='auto', target='en').translate(keyword).lower()
         
-        # סינון מחיר דינמי: רק למוצרים טכנולוגיים
+        # סינון מחיר דינמי למניעת אביזרים זולים במוצרי טכנולוגיה
         min_price = "0"
-        high_tech = ['camera', 'dash', 'phone', 'tablet', 'watch', 'monitor', 'projector', 'mictoscope']
-        if any(word in en_keyword for word in high_tech):
-            min_price = "35" 
+        tech_items = ['camera', 'dash', 'phone', 'tablet', 'watch', 'monitor', 'projector']
+        if any(word in en_keyword for word in tech_items):
+            min_price = "35"
 
         params = {
             'app_key': APP_KEY, 'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
@@ -53,7 +55,7 @@ def search_aliexpress(keyword, offset=0):
             'partner_id': 'top-autopilot', 'format': 'json', 'v': '2.0',
             'keywords': en_keyword, 'target_currency': 'ILS', 'ship_to_country': 'IL',
             'min_sale_price': min_price,
-            'sort': 'SALE_PRICE_DESC', 
+            'sort': 'LAST_VOLUME_DESC', # תיקון: מיון לפי כמות מכירות
             'page_size': '50'
         }
         params['sign'] = generate_sign(params)
@@ -61,7 +63,7 @@ def search_aliexpress(keyword, offset=0):
         products_raw = resp.get('aliexpress_affiliate_product_query_response', {}).get('resp_result', {}).get('result', {}).get('products', {}).get('product', [])
         if isinstance(products_raw, dict): products_raw = [products_raw]
 
-        bad_words = ['case', 'cover', 'adapter', 'cable', 'mount', 'holder', 'part']
+        bad_words = ['case', 'cover', 'adapter', 'cable', 'mount', 'holder']
         results, backup = [], []
         for p in products_raw:
             title = p.get('product_title', '').lower()
@@ -78,7 +80,7 @@ def search_aliexpress(keyword, offset=0):
             try: title_he = GoogleTranslator(source='auto', target='iw').translate(p['product_title'])
             except: title_he = p['product_title']
             
-            # הדגשת פיצ'רים והארכת טקסט
+            # הדגשת פיצ'רים (כמו המקצוענים)
             for f in ['4K', 'UHD', 'GPS', 'Sony', 'WiFi']:
                 if f.lower() in p['product_title'].lower():
                     title_he = f"💎 {f} | " + title_he
@@ -94,22 +96,20 @@ def search_aliexpress(keyword, offset=0):
         return output
     except: return None
 
-def draw_minimal_number(draw, cx, cy, num):
-    """ציור מספרים קטנים ואלגנטיים בפינה"""
-    # עיגול קטן ועדין (רדיוס 35)
+def draw_small_number(draw, cx, cy, num):
+    """ציור מספרים קטנים בפינה למראה נקי"""
     draw.ellipse((cx, cy, cx+35, cy+35), fill="#FFD700", outline="black", width=2)
-    base_x, base_y, thick = cx + 12, cy + 7, 5
-    # ציור סכמטי פשוט ודק
-    if num == 1: draw.rectangle([base_x+3, base_y, base_x+7, base_y+20], fill="black")
+    bx, by = cx + 12, cy + 7
+    if num == 1: draw.rectangle([bx+3, by, bx+7, by+20], fill="black")
     elif num == 2:
         for r in [[0,0,12,3],[10,0,12,10],[0,8,12,11],[0,10,3,20],[0,17,12,20]]:
-            draw.rectangle([base_x+r[0], base_y+r[1], base_x+r[2], base_y+r[3]], fill="black")
+            draw.rectangle([bx+r[0], by+r[1], bx+r[2], by+r[3]], fill="black")
     elif num == 3:
         for r in [[0,0,12,3],[10,0,12,20],[0,8,12,11],[0,17,12,20]]:
-            draw.rectangle([base_x+r[0], base_y+r[1], base_x+r[2], base_y+r[3]], fill="black")
+            draw.rectangle([bx+r[0], by+r[1], bx+r[2], by+r[3]], fill="black")
     elif num == 4:
         for r in [[0,0,3,10],[0,8,12,11],[10,0,12,20]]:
-            draw.rectangle([base_x+r[0], base_y+r[1], base_x+r[2], base_y+r[3]], fill="black")
+            draw.rectangle([bx+r[0], by+r[1], bx+r[2], by+r[3]], fill="black")
 
 def create_collage(image_urls):
     images = []
@@ -119,15 +119,12 @@ def create_collage(image_urls):
             img = Image.open(io.BytesIO(r.content)).convert('RGB').resize((500,500))
             images.append(img)
         except: images.append(Image.new('RGB', (500,500), color='#EEEEEE'))
-    
     collage = Image.new('RGB', (1000, 1000), 'white')
     positions = [(0,0), (500,0), (0,500), (500,500)]
     draw = ImageDraw.Draw(collage)
     for i, img in enumerate(images):
         collage.paste(img, positions[i])
-        # הזזה לפינה (15 פיקסלים מהקצה)
-        draw_minimal_number(draw, positions[i][0]+15, positions[i][1]+15, i+1)
-    
+        draw_small_number(draw, positions[i][0]+15, positions[i][1]+15, i+1)
     output = io.BytesIO()
     collage.save(output, format='JPEG', quality=90)
     output.seek(0)
@@ -149,18 +146,18 @@ def handle_message(message):
                 offset = session['offset'] + 4
         
         user_sessions[chat_id] = {'query': search_query, 'time': current_time, 'offset': offset}
-        loading = bot.send_message(chat_id, f"🔎 <b>מחפש את הדילים הכי טובים ל-'{search_query}'...</b>", parse_mode="HTML")
+        loading = bot.send_message(chat_id, f"⚡️ <b>מחפש עבורכם את הדילים הכי שווים ל-'{search_query}'...</b>", parse_mode="HTML")
         products = search_aliexpress(search_query, offset=offset)
         
         if not products:
-            bot.edit_message_text("מצטער, לא מצאתי משהו ששווה לשלוח.", chat_id, loading.message_id)
+            bot.edit_message_text("לא נמצאו תוצאות איכותיות כרגע.", chat_id, loading.message_id)
             return
 
         collage = create_collage([p['image'] for p in products])
         bot.delete_message(chat_id, loading.message_id)
-        bot.send_photo(chat_id, collage, caption=f"🎯 <b>נמצאו 4 {search_query} מומלצים:</b>", parse_mode="HTML")
+        bot.send_photo(chat_id, collage, caption=f"🎯 <b>מצאתי 4 תוצאות מעולות עבור: {search_query}</b>", parse_mode="HTML")
 
-        text_msg = "💎 <b>נבחרת הדילים:</b>\n" + "▬" * 15 + "\n\n"
+        text_msg = "💎 <b>נבחרת הדילים של DrDeals:</b>\n" + "▬" * 15 + "\n\n"
         markup = types.InlineKeyboardMarkup(row_width=2)
         buttons = []
         for i, p in enumerate(products):
@@ -171,7 +168,7 @@ def handle_message(message):
             text_msg += f"🔗 {short_url}\n\n"
             buttons.append(types.InlineKeyboardButton(text=f"🎁 לקנייה {i+1}", url=short_url))
 
-        text_msg += "▬" * 15 + "\n🤖 <b>DrDeals</b>"
+        text_msg += "▬" * 15 + "\n🤖 <b>DrDeals Premium</b>"
         markup.add(*buttons)
         bot.send_message(chat_id, text_msg, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
     except: pass
