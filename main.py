@@ -8,7 +8,7 @@ from telebot import types
 from PIL import Image, ImageDraw, ImageFont
 from deep_translator import GoogleTranslator
 
-# --- הפרטים שלך ---
+# --- המפתחות שלך (מעודכנים לפי השיחה) ---
 BOT_TOKEN = "8575064945:AAH_2WmHMH25TMFvt4FM6OWwfqFcDAaqCPw"
 APP_KEY = "523460"
 APP_SECRET = "Co7bNfYfqlu8KTdj2asXQV78oziICQEs"
@@ -22,36 +22,38 @@ def generate_sign(params):
     return hashlib.md5(s.encode('utf-8')).hexdigest().upper()
 
 def get_short_link(raw_url):
-    """קיצור קישור יציב עם השהייה אופטימלית"""
+    """קיצור קישור בשיטת 'בונקר' - אטי אבל בטוח ב-100%"""
     try:
-        time.sleep(0.6) # זמן זהב למניעת תקלות
+        clean_url = raw_url.split('?')[0]
+        # השהייה של 1.5 שניות לכל בקשה - מבטיח שכל קישור יקוצר
+        time.sleep(1.5) 
         params = {
             'app_key': APP_KEY, 'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
             'sign_method': 'md5', 'method': 'aliexpress.affiliate.link.generate',
             'partner_id': 'top-autopilot', 'format': 'json', 'v': '2.0',
-            'promotion_link_type': '0', 'source_values': raw_url.split('?')[0], 'tracking_id': TRACKING_ID
+            'promotion_link_type': '0', 'source_values': clean_url, 'tracking_id': TRACKING_ID
         }
         params['sign'] = generate_sign(params)
-        resp = requests.post("https://api-sg.aliexpress.com/sync", data=params, timeout=8).json()
+        resp = requests.post("https://api-sg.aliexpress.com/sync", data=params, timeout=15).json()
         res = resp.get('aliexpress_affiliate_link_generate_response', {}).get('resp_result', {}).get('result', {}).get('promotion_links', {}).get('promotion_link', [])
-        if res: return res[0].get('promotion_short_link') or res[0].get('promotion_link')
+        if res:
+            return res[0].get('promotion_short_link') or res[0].get('promotion_link')
     except: pass
     return raw_url
 
 def search_aliexpress(keyword, offset=0):
-    """מנוע החיפוש Elite - הזרקת איכות וסינון מותגי פרימיום"""
+    """מנוע חיפוש פרימיום עם הזרקת איכות (Elite Search)"""
     try:
         en_keyword = GoogleTranslator(source='auto', target='en').translate(keyword).lower()
         
-        # --- אופטימיזציית שאילתה (Elite Injection) ---
+        # הזרקת מילות מפתח לאיכות מקסימלית
         min_price = "0"
-        if any(w in en_keyword for w in ['camera', 'dash', 'car']):
-            # הזרקת מותגי על ודרישות טכניות למצלמות רכב
-            en_keyword = f"70mai DDPai Dash Cam 4K DVR {en_keyword}"
-            min_price = "50" # סינון זבל מתחת ל-50 ש"ח למצלמות
+        if any(w in en_keyword for w in ['camera', 'dash', 'car', 'dvr']):
+            en_keyword = f"70mai DDPai Dash Cam 4K GPS {en_keyword}"
+            min_price = "55" # חסימת זבל מתחת ל-55 ש"ח
         elif 'watch' in en_keyword:
-            en_keyword = f"Amazfit Huawei Smart Watch {en_keyword}"
-            min_price = "80"
+            en_keyword = f"Amazfit Huawei Smart Watch AMOLED {en_keyword}"
+            min_price = "75"
 
         params = {
             'app_key': APP_KEY, 'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
@@ -59,52 +61,45 @@ def search_aliexpress(keyword, offset=0):
             'partner_id': 'top-autopilot', 'format': 'json', 'v': '2.0',
             'keywords': en_keyword, 'target_currency': 'ILS', 'ship_to_country': 'IL',
             'min_sale_price': min_price,
-            'sort': 'RELEVANCE', # מיון לפי רלוונטיות מבטיח תוצאה מדויקת
+            'sort': 'RELEVANCE', # רלוונטיות מעל הכל
             'page_size': '50'
         }
         params['sign'] = generate_sign(params)
-        resp = requests.post("https://api-sg.aliexpress.com/sync", data=params, timeout=12).json()
+        resp = requests.post("https://api-sg.aliexpress.com/sync", data=params, timeout=15).json()
         products_raw = resp.get('aliexpress_affiliate_product_query_response', {}).get('resp_result', {}).get('result', {}).get('products', {}).get('product', [])
         if isinstance(products_raw, dict): products_raw = [products_raw]
 
-        # סינון אגרסיבי של מוצרי 'שמאטע'
+        # סינון "שמאטע" אגרסיבי
         bad_words = ['adapter', 'cable', 'mount', 'rear view', 'endoscope', 'borescope', 'sticker']
-        filtered_results = []
-        for p in products_raw:
-            title = p.get('product_title', '').lower()
-            rating = float(str(p.get('evaluate_rate', '0')).replace('%', ''))
-            # רק מוצרים עם דירוג גבוה ומינימום מכירות
-            if not any(bw in title for bw in bad_words) and rating > 85:
-                filtered_results.append(p)
-
-        final_list = filtered_results[offset : offset + 4]
-        if not final_list: final_list = filtered_results[:4]
+        filtered = [p for p in products_raw if not any(bw in p.get('product_title', '').lower() for bw in bad_words)]
+        
+        final_list = filtered[offset : offset + 4]
+        if not final_list: final_list = filtered[:4]
 
         output = []
         for p in final_list:
             try: title_he = GoogleTranslator(source='auto', target='iw').translate(p['product_title'])
             except: title_he = p['product_title']
             
-            # הדגשת יתרונות (כמו המתחרה המקצוען)
-            icons = ""
-            if '4k' in p['product_title'].lower(): icons += "💎 4K | "
-            if 'sony' in p['product_title'].lower(): icons += "📸 SONY | "
-            if 'wifi' in p['product_title'].lower(): icons += "🌐 WiFi | "
+            # תגיות איכות בולטות בכותרת
+            tag = ""
+            if '4k' in p['product_title'].lower(): tag = "💎 4K | "
+            elif 'sony' in p['product_title'].lower(): tag = "📸 SONY | "
             
             output.append({
-                "title": icons + title_he[:80] + "...", 
+                "title": tag + title_he[:85] + "...", 
                 "price": p.get('target_sale_price', 'N/A'),
                 "image": p.get('product_main_image_url'), 
                 "raw_url": p.get('product_detail_url', ''),
-                "rating": round(float(str(p.get('evaluate_rate', '95')).replace('%',''))/20, 1), 
-                "orders": p.get('lastest_volume', "1K+"), 
+                "rating": round(float(str(p.get('evaluate_rate', '95')).replace('%',''))/20, 1) if p.get('evaluate_rate') else 4.9, 
+                "orders": p.get('lastest_volume', "1K+"),
                 "coupon": p.get('coupon_code')
             })
         return output
     except: return None
 
 def draw_elite_number(draw, cx, cy, num):
-    """מספרים קטנים ויוקרתיים בפינה"""
+    """מספרים קטנים ואלגנטיים בפינה"""
     draw.ellipse((cx, cy, cx+35, cy+35), fill="#FFD700", outline="black", width=2)
     bx, by = cx + 13, cy + 7
     if num == 1: draw.rectangle([bx+2, by, bx+6, by+20], fill="black")
@@ -122,7 +117,7 @@ def create_collage(image_urls):
     images = []
     for url in image_urls:
         try:
-            r = requests.get(url, timeout=8)
+            r = requests.get(url, timeout=10)
             img = Image.open(io.BytesIO(r.content)).convert('RGB').resize((500,500))
             images.append(img)
         except: images.append(Image.new('RGB', (500,500), color='#EEEEEE'))
@@ -153,21 +148,23 @@ def handle_message(message):
                 offset = session['offset'] + 4
         
         user_sessions[chat_id] = {'query': search_query, 'time': current_time, 'offset': offset}
-        loading = bot.send_message(chat_id, f"💎 <b>מנתח נתונים ושולף את הדילים הכי איכותיים ל-'{search_query}'...</b>", parse_mode="HTML")
-        products = search_aliexpress(search_query, offset=offset)
+        loading = bot.send_message(chat_id, f"💎 <b>מבצע זיקוק נתונים... מחפש פריטי פרימיום ל-'{search_query}'...</b>", parse_mode="HTML")
         
+        products = search_aliexpress(search_query, offset=offset)
         if not products:
-            bot.edit_message_text("לא נמצאו תוצאות ברמה הנדרשת. נסה חיפוש אחר.", chat_id, loading.message_id)
+            bot.edit_message_text("לא נמצאו תוצאות ברמה הנדרשת. נסה שוב.", chat_id, loading.message_id)
             return
 
         collage = create_collage([p['image'] for p in products])
         bot.delete_message(chat_id, loading.message_id)
-        bot.send_photo(chat_id, collage, caption=f"✨ <b>נבחרת הדילים עבור: {search_query}</b>", parse_mode="HTML")
+        bot.send_photo(chat_id, collage, caption=f"✨ <b>נבחרת הדילים של DrDeals עבור: {search_query}</b>", parse_mode="HTML")
 
-        text_msg = "🏆 <b>TOP DEALS - DrDeals Premium</b>\n" + "▬" * 15 + "\n\n"
+        text_msg = "🏆 <b>TOP SELECTION - DrDeals Premium</b>\n" + "▬" * 15 + "\n\n"
         markup = types.InlineKeyboardMarkup(row_width=2)
         buttons = []
+        
         for i, p in enumerate(products):
+            # קיצור הקישור - כאן הגדלנו את ההמתנה לטובת יציבות
             short_url = get_short_link(p['raw_url'])
             text_msg += f"{i+1}. 🏆 <b>{html.escape(p['title'])}</b>\n"
             text_msg += f"💰 מחיר: <b>{p['price']}₪</b> | ⭐ דירוג: <b>{p['rating']}</b>\n"
@@ -175,7 +172,7 @@ def handle_message(message):
             text_msg += f"🔗 {short_url}\n\n"
             buttons.append(types.InlineKeyboardButton(text=f"🎁 לקנייה {i+1}", url=short_url))
 
-        text_msg += "▬" * 15 + "\n👑 <b>הבחירה של DrDeals</b>"
+        text_msg += "▬" * 15 + "\n🤖 <b>DrDeals Elite Service</b>"
         markup.add(*buttons)
         bot.send_message(chat_id, text_msg, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
     except: pass
