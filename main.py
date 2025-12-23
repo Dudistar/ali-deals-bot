@@ -9,7 +9,7 @@ from telebot import types
 from PIL import Image, ImageDraw, ImageFont
 from deep_translator import GoogleTranslator
 
-# --- הפרטים שלך ---
+# ================== פרטים אישיים ==================
 BOT_TOKEN = "8575064945:AAH_2WmHMH25TMFvt4FM6OWwfqFcDAaqCPw"
 APP_KEY = "523460"
 APP_SECRET = "Co7bNfYfqlu8KTdj2asXQV78oziICQEs"
@@ -17,139 +17,194 @@ TRACKING_ID = "DrDeals"
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
+# ================== כלי עזר ==================
 def generate_sign(params):
     s = APP_SECRET + ''.join([f"{k}{v}" for k, v in sorted(params.items())]) + APP_SECRET
     return hashlib.md5(s.encode('utf-8')).hexdigest().upper()
 
+def normalize_rating(val):
+    try:
+        v = float(str(val).replace('%', ''))
+        return round(v / 20, 1) if v > 5 else round(v, 1)
+    except:
+        return 4.5
+
+# ================== קיצור קישורים ==================
 def get_short_link(raw_url):
-    """מנגנון קיצור קישור רשמי ויציב"""
     try:
         time.sleep(1.2)
         params = {
-            'app_key': APP_KEY, 'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
-            'sign_method': 'md5', 'method': 'aliexpress.affiliate.link.generate',
-            'partner_id': 'top-autopilot', 'format': 'json', 'v': '2.0',
-            'promotion_link_type': '0', 'source_values': raw_url.split('?')[0], 'tracking_id': TRACKING_ID
+            'app_key': APP_KEY,
+            'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'sign_method': 'md5',
+            'method': 'aliexpress.affiliate.link.generate',
+            'partner_id': 'top-autopilot',
+            'format': 'json',
+            'v': '2.0',
+            'promotion_link_type': '0',
+            'source_values': raw_url.split('?')[0],
+            'tracking_id': TRACKING_ID
         }
         params['sign'] = generate_sign(params)
-        resp = requests.post("https://api-sg.aliexpress.com/sync", data=params, timeout=5).json()
-        res = resp.get('aliexpress_affiliate_link_generate_response', {}).get('resp_result', {}).get('result', {}).get('promotion_links', {}).get('promotion_link', [])
-        if res: return res[0].get('promotion_short_link') or res[0].get('promotion_link')
-    except: pass
+        r = requests.post("https://api-sg.aliexpress.com/sync", data=params, timeout=6).json()
+        pl = r.get('aliexpress_affiliate_link_generate_response', {}) \
+              .get('resp_result', {}).get('result', {}) \
+              .get('promotion_links', {}).get('promotion_link', [])
+        if pl:
+            return pl[0].get('promotion_short_link') or pl[0].get('promotion_link')
+    except:
+        pass
     return raw_url
 
+# ================== חיפוש חכם ==================
 def search_aliexpress(keyword):
-    """חיפוש חכם שמונע 'לא נמצאו תוצאות' ומנקה זבל"""
     try:
-        en_keyword = GoogleTranslator(source='auto', target='en').translate(keyword).lower()
+        en_kw = GoogleTranslator(source='auto', target='en').translate(keyword).lower()
+        kw_words = en_kw.split()
+
         params = {
-            'app_key': APP_KEY, 'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
-            'sign_method': 'md5', 'method': 'aliexpress.affiliate.product.query',
-            'partner_id': 'top-autopilot', 'format': 'json', 'v': '2.0',
-            'keywords': en_keyword, 'target_currency': 'ILS', 'ship_to_country': 'IL',
-            'sort': 'LAST_VOLUME_DESC', 'page_size': '50'
+            'app_key': APP_KEY,
+            'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'sign_method': 'md5',
+            'method': 'aliexpress.affiliate.product.query',
+            'partner_id': 'top-autopilot',
+            'format': 'json',
+            'v': '2.0',
+            'keywords': en_kw,
+            'target_currency': 'ILS',
+            'ship_to_country': 'IL',
+            'sort': 'LAST_VOLUME_DESC',
+            'page_size': '50'
         }
         params['sign'] = generate_sign(params)
         resp = requests.post("https://api-sg.aliexpress.com/sync", data=params, timeout=10).json()
-        products_raw = resp.get('aliexpress_affiliate_product_query_response', {}).get('resp_result', {}).get('result', {}).get('products', {}).get('product', [])
-        if isinstance(products_raw, dict): products_raw = [products_raw]
-        
-        results, trash = [], []
-        bad_words = ['reader', 'adapter', 'cable', 'case', 'cover', 'mount', 'stand', 'bag']
-        
-        for p in products_raw:
-            title = p.get('product_title', '').lower()
-            is_bad = any(bw in title for bw in bad_words) and not any(bw in en_keyword for bw in bad_words)
-            
-            # אם זה לא 'זבל' - נכנס לרשימה הראשית
-            if not is_bad: results.append(p)
-            else: trash.append(p)
-            
-        # אם הסינון היה חזק מדי, נשלים מה'זבל' כדי שלא תצא הודעת שגיאה
-        final_list = (results + trash)[:4]
-        
-        output = []
-        for p in final_list:
-            try: title_he = GoogleTranslator(source='auto', target='iw').translate(p['product_title'])
-            except: title_he = p['product_title']
-            
-            try: # המרת דירוג אנושית 1-5
-                val = float(str(p.get('evaluate_rate', '95')).replace('%', ''))
-                rate = round(val / 20, 1) if val > 5 else round(val, 1)
-            except: rate = 4.8
+        products = resp.get('aliexpress_affiliate_product_query_response', {}) \
+                       .get('resp_result', {}).get('result', {}) \
+                       .get('products', {}).get('product', [])
 
-            output.append({
-                "title": title_he[:50] + "...", "price": p.get('target_sale_price', 'N/A'),
-                "image": p.get('product_main_image_url'), "raw_url": p.get('product_detail_url', ''),
-                "rating": rate, "orders": p.get('lastest_volume', "Top"), "discount": p.get('discount', '0%')
+        if isinstance(products, dict):
+            products = [products]
+
+        bad_words = ['case', 'cover', 'cable', 'adapter', 'bag', 'mount']
+        scored = []
+
+        for p in products:
+            title = p.get('product_title', '')
+            title_l = title.lower()
+
+            score = 0
+
+            # רלוונטיות
+            for w in kw_words:
+                if w in title_l:
+                    score += 3
+
+            # עונש על אביזרים
+            if any(b in title_l for b in bad_words) and not any(b in en_kw for b in bad_words):
+                score -= 4
+
+            rating = normalize_rating(p.get('evaluate_rate'))
+            if rating < 4.2:
+                score -= 5
+            elif rating >= 4.6:
+                score += 3
+
+            orders = int(p.get('lastest_volume', 0)) if str(p.get('lastest_volume', '')).isdigit() else 0
+            score += min(orders / 1000, 5)
+
+            scored.append((score, p, rating, orders))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        best = scored[:4]
+
+        results = []
+        for _, p, rating, orders in best:
+            try:
+                title_he = GoogleTranslator(source='auto', target='iw').translate(p['product_title'])
+            except:
+                title_he = p['product_title']
+
+            results.append({
+                "title": title_he[:60],
+                "price": p.get('target_sale_price', 'N/A'),
+                "image": p.get('product_main_image_url'),
+                "url": p.get('product_detail_url', ''),
+                "rating": rating,
+                "orders": orders,
+                "discount": p.get('discount', '0%')
             })
-        return output
-    except: return None
 
+        return results
+    except:
+        return None
+
+# ================== קולאז' ==================
 def create_collage(image_urls):
-    """יצירת קולאז' עם מספרים ענקיים וברורים"""
-    images = []
+    imgs = []
     for url in image_urls:
         try:
             r = requests.get(url, timeout=10)
-            img = Image.open(io.BytesIO(r.content)).convert('RGB').resize((500,500))
-            images.append(img)
-        except: images.append(Image.new('RGB', (500,500), color='#EEEEEE'))
-    while len(images) < 4: images.append(Image.new('RGB', (500,500), color='#EEEEEE'))
-    
-    collage = Image.new('RGB', (1000, 1000), 'white')
-    positions = [(0,0), (500,0), (0,500), (500,500)]
-    draw = ImageDraw.Draw(collage)
-    
-    # שימוש בפונט ענק שקיים ב-Railway
-    try: font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 160)
-    except: font = ImageFont.load_default()
-        
-    for i, img in enumerate(images):
-        collage.paste(img, positions[i])
-        cx, cy = positions[i][0] + 25, positions[i][1] + 25
-        draw.ellipse((cx, cy, cx+160, cy+160), fill="#FFD700", outline="black", width=10)
-        draw.text((cx + 40, cy - 10), str(i+1), fill="black", font=font)
-        
-    output = io.BytesIO()
-    collage.save(output, format='JPEG', quality=95)
-    output.seek(0)
-    return output
+            imgs.append(Image.open(io.BytesIO(r.content)).convert('RGB').resize((500,500)))
+        except:
+            imgs.append(Image.new('RGB', (500,500), '#EEE'))
 
-@bot.message_handler(func=lambda message: True)
-def handle_message(message):
+    while len(imgs) < 4:
+        imgs.append(Image.new('RGB', (500,500), '#EEE'))
+
+    canvas = Image.new('RGB', (1000,1000), 'white')
+    draw = ImageDraw.Draw(canvas)
+
     try:
-        query = message.text.strip()
-        if not query.lower().startswith("חפש לי"):
-            bot.reply_to(message, "שלום! כתבו 'חפש לי' ושם מוצר.")
-            return
-        
-        search_query = query[7:].strip()
-        loading = bot.send_message(message.chat.id, f"🔎 מחפש דילים ל-'{search_query}'...")
-        products = search_aliexpress(search_query)
-        
-        if not products:
-            bot.edit_message_text("לא נמצאו תוצאות.", message.chat.id, loading.message_id)
-            return
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 220)
+    except:
+        font = ImageFont.load_default()
 
-        img_urls = [p['image'] for p in products]
-        collage = create_collage(img_urls)
-        bot.delete_message(message.chat.id, loading.message_id)
-        bot.send_photo(message.chat.id, collage, caption=f"🎯 תוצאות עבור: {search_query}")
+    pos = [(0,0),(500,0),(0,500),(500,500)]
+    for i, img in enumerate(imgs):
+        canvas.paste(img, pos[i])
+        cx, cy = pos[i][0]+25, pos[i][1]+25
+        draw.ellipse((cx, cy, cx+200, cy+200), fill="#FFD700", outline="black", width=12)
+        draw.text((cx+50, cy+10), str(i+1), fill="black", font=font)
 
-        markup = types.InlineKeyboardMarkup(row_width=2)
-        buttons, text_msg = [], "⭐️ <b>דילים נבחרים:</b>\n▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n\n"
-        
-        for i, p in enumerate(products):
-            short_url = get_short_link(p['raw_url'])
-            text_msg += f"{i+1}. 🏆 <b>{html.escape(p['title'])}</b>\n"
-            text_msg += f"🔥 הנחה באתר: <b>-{p['discount']}</b>\n💰 מחיר: <b>{p['price']}₪</b>\n"
-            text_msg += f"⭐ דירוג: {p['rating']}/5 | 🛒 רכישות: {p['orders']}\n🔗 {short_url}\n\n"
-            buttons.append(types.InlineKeyboardButton(text=f"🎁 לקנייה {i+1}", url=short_url))
-        
-        text_msg += "▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n🤖 <i>DrDeals</i>"
-        markup.add(*buttons)
-        bot.send_message(message.chat.id, text_msg, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
-    except: pass
+    out = io.BytesIO()
+    canvas.save(out, format='JPEG', quality=95)
+    out.seek(0)
+    return out
+
+# ================== טלגרם ==================
+@bot.message_handler(func=lambda m: True)
+def handle_message(m):
+    q = m.text.strip()
+    if not q.lower().startswith("חפש לי"):
+        bot.reply_to(m, "כתוב: חפש לי <שם מוצר>")
+        return
+
+    query = q[7:].strip()
+    msg = bot.send_message(m.chat.id, f"🔎 מחפש את הדילים הכי שווים ל־{query}…")
+
+    products = search_aliexpress(query)
+    if not products:
+        bot.edit_message_text("לא מצאתי תוצאות טובות כרגע.", m.chat.id, msg.message_id)
+        return
+
+    collage = create_collage([p['image'] for p in products])
+    bot.delete_message(m.chat.id, msg.message_id)
+    bot.send_photo(m.chat.id, collage, caption=f"🎯 תוצאות מומלצות ל־{query}")
+
+    text = "⭐️ <b>הבחירות הטובות ביותר:</b>\n\n"
+    kb = types.InlineKeyboardMarkup()
+
+    for i,p in enumerate(products):
+        link = get_short_link(p['url'])
+        text += (
+            f"{i+1}. 🏆 <b>{html.escape(p['title'])}</b>\n"
+            f"💰 מחיר: <b>{p['price']}₪</b>\n"
+            f"⭐ דירוג: {p['rating']} | 🛒 {p['orders']} רכישות\n"
+            f"🔗 {link}\n\n"
+        )
+        kb.add(types.InlineKeyboardButton(f"🎁 לקנייה {i+1}", url=link))
+
+    text += "<i>DrDeals</i>"
+    bot.send_message(m.chat.id, text, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=True)
 
 bot.infinity_polling()
