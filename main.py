@@ -8,11 +8,11 @@ from telebot import types
 from PIL import Image, ImageDraw, ImageFont
 from deep_translator import GoogleTranslator
 
-# --- הפרטים המדויקים שלך מהשיחה ---
-BOT_TOKEN = "8575064945:AAH_2WmHMH25TMFvt4FM6OWwfqFcDAaqCPw" #
-APP_KEY = "523460" #
-APP_SECRET = "Co7bNfYfqlu8KTdj2asXQV78oziICQEs" #
-TRACKING_ID = "DrDeals" #
+# --- הפרטים המדויקים שלך ---
+BOT_TOKEN = "8575064945:AAH_2WmHMH25TMFvt4FM6OWwfqFcDAaqCPw"
+APP_KEY = "523460"
+APP_SECRET = "Co7bNfYfqlu8KTdj2asXQV78oziICQEs"
+TRACKING_ID = "DrDeals"
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
@@ -21,9 +21,9 @@ def generate_sign(params):
     return hashlib.md5(s.encode('utf-8')).hexdigest().upper()
 
 def get_short_link(raw_url):
-    """קיצור קישור מהיר ויציב למניעת תקיעות"""
+    """קיצור קישור מהיר ויציב למניעת תקיעות בשרת"""
     try:
-        time.sleep(0.4) 
+        time.sleep(0.3) 
         params = {
             'app_key': APP_KEY, 'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
             'sign_method': 'md5', 'method': 'aliexpress.affiliate.link.generate',
@@ -38,7 +38,7 @@ def get_short_link(raw_url):
     return raw_url
 
 def search_aliexpress(keyword):
-    """חיפוש חכם עם סינון אביזרים ו'רשת ביטחון'"""
+    """חיפוש חכם עם 'רשת ביטחון' למניעת הודעות שגיאה"""
     try:
         en_keyword = GoogleTranslator(source='auto', target='en').translate(keyword).lower()
         params = {
@@ -81,7 +81,7 @@ def search_aliexpress(keyword):
     except: return None
 
 def create_collage(image_urls):
-    """קולאז' עם מספרים ענקיים בעיגולים צהובים"""
+    """יצירת קולאז' עם מספרים ענקיים וברורים בעיגולים צהובים"""
     images = []
     for url in image_urls:
         try:
@@ -94,18 +94,22 @@ def create_collage(image_urls):
     collage = Image.new('RGB', (1000, 1000), 'white')
     positions = [(0,0), (500,0), (0,500), (500,500)]
     draw = ImageDraw.Draw(collage)
+
+    # כאן נמצא הפתרון למספרים הגדולים
     try: 
-        # פונט בולט וגדול עבור Railway
-        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 150)
+        # פונט ענק (160) בנתיב הלינוקס של Railway
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 160)
     except: 
         font = ImageFont.load_default()
 
     for i, img in enumerate(images):
         collage.paste(img, positions[i])
         cx, cy = positions[i][0]+30, positions[i][1]+30
+        # ציור העיגול הצהוב
         draw.ellipse((cx, cy, cx+160, cy+160), fill="#FFD700", outline="black", width=10)
-        # מספר ענק במרכז העיגול הצהוב
-        draw.text((cx+45, cy-10), str(i+1), fill="black", font=font)
+        # מיקום המספר במרכז העיגול
+        draw.text((cx + 40, cy - 15), str(i+1), fill="black", font=font)
+
     output = io.BytesIO()
     collage.save(output, format='JPEG', quality=85)
     output.seek(0)
@@ -124,7 +128,7 @@ def handle_message(message):
         products = search_aliexpress(search_query)
 
         if not products:
-            bot.edit_message_text("לא נמצאו תוצאות כרגע.", message.chat.id, loading.message_id)
+            bot.edit_message_text("מצטער, לא נמצאו תוצאות כרגע.", message.chat.id, loading.message_id)
             return
 
         collage = create_collage([p['image'] for p in products])
