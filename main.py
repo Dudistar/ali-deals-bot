@@ -15,6 +15,7 @@ APP_SECRET = "Co7bNfYfqlu8KTdj2asXQV78oziICQEs"
 TRACKING_ID = "DrDeals"
 
 bot = telebot.TeleBot(BOT_TOKEN)
+user_sessions = {}
 
 def generate_sign(params):
     s = APP_SECRET + ''.join([f"{k}{v}" for k, v in sorted(params.items())]) + APP_SECRET
@@ -36,7 +37,7 @@ def get_short_link(raw_url):
     except: pass
     return raw_url
 
-def search_aliexpress(keyword):
+def search_aliexpress(keyword, offset=0):
     try:
         en_keyword = GoogleTranslator(source='auto', target='en').translate(keyword).lower()
         params = {
@@ -44,22 +45,27 @@ def search_aliexpress(keyword):
             'sign_method': 'md5', 'method': 'aliexpress.affiliate.product.query',
             'partner_id': 'top-autopilot', 'format': 'json', 'v': '2.0',
             'keywords': en_keyword, 'target_currency': 'ILS', 'ship_to_country': 'IL',
-            'sort': 'LAST_VOLUME_DESC', 'page_size': '40'
+            'sort': 'LAST_VOLUME_DESC', 'page_size': '50'
         }
         params['sign'] = generate_sign(params)
         resp = requests.post("https://api-sg.aliexpress.com/sync", data=params, timeout=10).json()
         products_raw = resp.get('aliexpress_affiliate_product_query_response', {}).get('resp_result', {}).get('result', {}).get('products', {}).get('product', [])
         if isinstance(products_raw, dict): products_raw = [products_raw]
 
-        bad_words = ['case', 'cover', 'adapter', 'cable', 'mount']
+        bad_words = ['case', 'cover', 'adapter', 'cable', 'mount', 'parts']
         results, backup = [], []
+        
         for p in products_raw:
             title = p.get('product_title', '').lower()
+            # סינון חכם: אם מילה "רעה" נמצאת בכותרת אבל לא בחיפוש המקורי - זה הולך לגיבוי
             is_bad = any(bw in title for bw in bad_words) and not any(bw in en_keyword for bw in bad_words)
             if not is_bad: results.append(p)
             else: backup.append(p)
 
-        final_list = (results + backup)[:4]
+        all_sorted = results + backup
+        final_list = all_sorted[offset : offset + 4]
+        if not final_list: final_list = all_sorted[:4]
+
         output = []
         for p in final_list:
             try: title_he = GoogleTranslator(source='auto', target='iw').translate(p['product_title'])
@@ -79,33 +85,19 @@ def search_aliexpress(keyword):
     except: return None
 
 def draw_number(draw, cx, cy, num):
-    """מצייר מספר בצורה גרפית בתוך עיגול"""
-    # עיגול צהוב
+    """ציור גרפי ידני של המספרים כדי שלא יעלמו בגלל פונטים חסרים"""
     draw.ellipse((cx, cy, cx+160, cy+160), fill="#FFD700", outline="black", width=10)
-    
-    # קורדינטות בסיס לציור בתוך העיגול
-    base_x = cx + 40
-    base_y = cy + 20
-    thickness = 20
-    
-    # ציור גרפי של ספרות 1-4
-    if num == 1:
-        draw.rectangle([base_x+30, base_y, base_x+30+thickness, base_y+120], fill="black")
+    base_x, base_y, thick = cx + 45, cy + 30, 18
+    if num == 1: draw.rectangle([base_x+20, base_y, base_x+20+thick, base_y+100], fill="black")
     elif num == 2:
-        draw.rectangle([base_x, base_y, base_x+80, base_y+thickness], fill="black")
-        draw.rectangle([base_x+80-thickness, base_y, base_x+80, base_y+60], fill="black")
-        draw.rectangle([base_x, base_y+60-thickness, base_x+80, base_y+60], fill="black")
-        draw.rectangle([base_x, base_y+60, base_x+thickness, base_y+120], fill="black")
-        draw.rectangle([base_x, base_y+120-thickness, base_x+80, base_y+120], fill="black")
+        for r in [[0,0,70,thick],[55,0,70,50],[0,40,70,58],[0,50,thick,100],[0,82,70,100]]:
+            draw.rectangle([base_x+r[0], base_y+r[1], base_x+r[2], base_y+r[3]], fill="black")
     elif num == 3:
-        draw.rectangle([base_x, base_y, base_x+80, base_y+thickness], fill="black")
-        draw.rectangle([base_x+80-thickness, base_y, base_x+80, base_y+120], fill="black")
-        draw.rectangle([base_x, base_y+60-thickness, base_x+80, base_y+60], fill="black")
-        draw.rectangle([base_x, base_y+120-thickness, base_x+80, base_y+120], fill="black")
+        for r in [[0,0,70,thick],[55,0,70,100],[0,42,70,58],[0,82,70,100]]:
+            draw.rectangle([base_x+r[0], base_y+r[1], base_x+r[2], base_y+r[3]], fill="black")
     elif num == 4:
-        draw.rectangle([base_x, base_y, base_x+thickness, base_y+60], fill="black")
-        draw.rectangle([base_x, base_y+60-thickness, base_x+80, base_y+60], fill="black")
-        draw.rectangle([base_x+80-thickness, base_y, base_x+80, base_y+120], fill="black")
+        for r in [[0,0,thick,55],[0,42,70,58],[55,0,70,100]]:
+            draw.rectangle([base_x+r[0], base_y+r[1], base_x+r[2], base_y+r[3]], fill="black")
 
 def create_collage(image_urls):
     images = []
@@ -120,13 +112,9 @@ def create_collage(image_urls):
     collage = Image.new('RGB', (1000, 1000), 'white')
     positions = [(0,0), (500,0), (0,500), (500,500)]
     draw = ImageDraw.Draw(collage)
-
     for i, img in enumerate(images):
         collage.paste(img, positions[i])
-        cx, cy = positions[i][0]+30, positions[i][1]+30
-        # שימוש בפונקציית הציור הגרפית
-        draw_number(draw, cx, cy, i+1)
-
+        draw_number(draw, positions[i][0]+30, positions[i][1]+30, i+1)
     output = io.BytesIO()
     collage.save(output, format='JPEG', quality=85)
     output.seek(0)
@@ -140,17 +128,28 @@ def handle_message(message):
             bot.reply_to(message, "שלום! כתבו 'חפש לי' ואת שם המוצר.")
             return
 
-        search_query = query[7:].strip()
-        loading = bot.send_message(message.chat.id, f"🔎 מחפש עבורכם דילים ל-'{search_query}'...")
-        products = search_aliexpress(search_query)
+        search_query = query[7:].strip().lower()
+        chat_id = message.chat.id
+        current_time = time.time()
+        
+        offset = 0
+        if chat_id in user_sessions:
+            session = user_sessions[chat_id]
+            if session['query'] == search_query and (current_time - session['time']) < 120:
+                offset = session['offset'] + 4
+                if offset >= 40: offset = 0
+            
+        user_sessions[chat_id] = {'query': search_query, 'time': current_time, 'offset': offset}
+        loading = bot.send_message(chat_id, f"🔎 מחפש עבורכם דילים ל-'{search_query}'...")
+        products = search_aliexpress(search_query, offset=offset)
 
         if not products:
-            bot.edit_message_text("לא נמצאו תוצאות כרגע.", message.chat.id, loading.message_id)
+            bot.edit_message_text("לא נמצאו תוצאות.", chat_id, loading.message_id)
             return
 
         collage = create_collage([p['image'] for p in products])
-        bot.delete_message(message.chat.id, loading.message_id)
-        bot.send_photo(message.chat.id, collage, caption=f"🎯 תוצאות עבור: <b>{search_query}</b>", parse_mode="HTML")
+        bot.delete_message(chat_id, loading.message_id)
+        bot.send_photo(chat_id, collage, caption=f"🎯 תוצאות עבור: <b>{search_query}</b>", parse_mode="HTML")
 
         markup = types.InlineKeyboardMarkup(row_width=2)
         buttons, text_msg = [], "⭐️ <b>דילים נבחרים:</b>\n▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n\n"
@@ -161,9 +160,9 @@ def handle_message(message):
             text_msg += f"⭐ דירוג: {p['rating']}/5 | 🛒 רכישות: {p['orders']}\n🔗 {short_url}\n\n"
             buttons.append(types.InlineKeyboardButton(text=f"🎁 לקנייה {i+1}", url=short_url))
 
-        text_msg += "▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n🤖 <i>צייד הדילים - DrDeals</i>"
+        text_msg += "▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n🤖 <i>DrDeals</i>"
         markup.add(*buttons)
-        bot.send_message(message.chat.id, text_msg, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
+        bot.send_message(chat_id, text_msg, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
     except: pass
 
 bot.infinity_polling()
