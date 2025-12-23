@@ -22,92 +22,123 @@ def generate_sign(params):
     return hashlib.md5(s.encode('utf-8')).hexdigest().upper()
 
 def get_short_link(raw_url):
-    """קיצור קישור מהיר ויציב"""
+    """קישור קצר יציב עם השהייה כדי למנוע חסימה"""
     try:
-        time.sleep(0.5) # השהייה קצרה למניעת חסימה
+        time.sleep(1.5)  # השהיה ארוכה יותר כדי שהקישור יתקבל נכון
         params = {
-            'app_key': APP_KEY, 'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
-            'sign_method': 'md5', 'method': 'aliexpress.affiliate.link.generate',
-            'partner_id': 'top-autopilot', 'format': 'json', 'v': '2.0',
-            'promotion_link_type': '0', 'source_values': raw_url.split('?')[0], 'tracking_id': TRACKING_ID
+            'app_key': APP_KEY,
+            'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'sign_method': 'md5',
+            'method': 'aliexpress.affiliate.link.generate',
+            'partner_id': 'top-autopilot',
+            'format': 'json',
+            'v': '2.0',
+            'promotion_link_type': '0',
+            'source_values': raw_url.split('?')[0],
+            'tracking_id': TRACKING_ID
         }
         params['sign'] = generate_sign(params)
         resp = requests.post("https://api-sg.aliexpress.com/sync", data=params, timeout=5).json()
-        res = resp.get('aliexpress_affiliate_link_generate_response', {}).get('resp_result', {}).get('result', {}).get('promotion_links', {}).get('promotion_link', [])
+        res = resp.get('aliexpress_affiliate_link_generate_response', {})\
+                  .get('resp_result', {})\
+                  .get('result', {})\
+                  .get('promotion_links', {})\
+                  .get('promotion_link', [])
         if res:
             return res[0].get('promotion_short_link') or res[0].get('promotion_link')
     except: pass
     return raw_url
 
 def search_aliexpress(keyword):
-    """חיפוש חכם עם סינון אביזרים"""
+    """חיפוש חכם עם סינון אמצע-גמיש"""
     try:
         en_keyword = GoogleTranslator(source='auto', target='en').translate(keyword).lower()
         params = {
-            'app_key': APP_KEY, 'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
-            'sign_method': 'md5', 'method': 'aliexpress.affiliate.product.query',
-            'partner_id': 'top-autopilot', 'format': 'json', 'v': '2.0',
-            'keywords': en_keyword, 'target_currency': 'ILS', 'ship_to_country': 'IL',
-            'sort': 'LAST_VOLUME_DESC', 'page_size': '40'
+            'app_key': APP_KEY,
+            'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'sign_method': 'md5',
+            'method': 'aliexpress.affiliate.product.query',
+            'partner_id': 'top-autopilot',
+            'format': 'json',
+            'v': '2.0',
+            'keywords': en_keyword,
+            'target_currency': 'ILS',
+            'ship_to_country': 'IL',
+            'sort': 'LAST_VOLUME_DESC',
+            'page_size': '50'
         }
         params['sign'] = generate_sign(params)
         resp = requests.post("https://api-sg.aliexpress.com/sync", data=params, timeout=10).json()
-        products_raw = resp.get('aliexpress_affiliate_product_query_response', {}).get('resp_result', {}).get('result', {}).get('products', {}).get('product', [])
+        products_raw = resp.get('aliexpress_affiliate_product_query_response', {})\
+                           .get('resp_result', {})\
+                           .get('result', {})\
+                           .get('products', {})\
+                           .get('product', [])
         if isinstance(products_raw, dict): products_raw = [products_raw]
 
-        bad_words = ['case', 'cover', 'adapter', 'cable', 'mount', 'holder']
-        results, trash = [], []
+        # סינון חכם: מילים לא רצויות
+        bad_words = ['case', 'cover', 'adapter', 'cable', 'mount', 'holder', 'bag']
+        positive_keywords = en_keyword.split()
 
+        results, trash = [], []
         for p in products_raw:
             title = p.get('product_title', '').lower()
-            is_bad = any(bw in title for bw in bad_words) and not any(bw in en_keyword for bw in bad_words)
+            is_bad = any(bw in title for bw in bad_words) and not any(pk in title for pk in positive_keywords)
             if not is_bad: results.append(p)
             else: trash.append(p)
 
-        final_list = (results + trash)[:4]
+        final_list = (results + trash)[:4]  # תמיד 4 מוצרים
         output = []
         for p in final_list:
             try: title_he = GoogleTranslator(source='auto', target='iw').translate(p['product_title'])
             except: title_he = p['product_title']
-            
-            try: # המרת דירוג אחוזים לציון 1-5
+
+            try:
                 val = float(str(p.get('evaluate_rate', '95')).replace('%', ''))
                 rate = round(val / 20, 1) if val > 5 else round(val, 1)
             except: rate = 4.8
 
             output.append({
-                "title": title_he[:50] + "...", "price": p.get('target_sale_price', 'N/A'),
-                "image": p.get('product_main_image_url'), "raw_url": p.get('product_detail_url', ''),
-                "rating": rate, "orders": p.get('lastest_volume', "Top"), "discount": p.get('discount', '0%')
+                "title": title_he[:50] + "...",
+                "price": p.get('target_sale_price', 'N/A'),
+                "image": p.get('product_main_image_url'),
+                "raw_url": p.get('product_detail_url', ''),
+                "rating": rate,
+                "orders": p.get('lastest_volume', "Top"),
+                "discount": p.get('discount', '0%')
             })
         return output
     except: return None
 
 def create_collage(image_urls):
-    """יצירת קולאז' עם מספרים בולטים"""
+    """קולאז’ עם מספרים גדולים וברורים"""
     images = []
     for url in image_urls:
         try:
-            r = requests.get(url, timeout=8)
+            r = requests.get(url, timeout=10)
             img = Image.open(io.BytesIO(r.content)).convert('RGB').resize((500,500))
             images.append(img)
-        except: images.append(Image.new('RGB', (500,500), color='#EEEEEE'))
-    
-    collage = Image.new('RGB', (1000, 1000), 'white')
-    positions = [(0,0), (500,0), (0,500), (500,500)]
+        except:
+            images.append(Image.new('RGB', (500,500), color='#EEEEEE'))
+
+    while len(images) < 4:
+        images.append(Image.new('RGB', (500,500), color='#EEEEEE'))
+
+    collage = Image.new('RGB', (1000,1000), 'white')
+    positions = [(0,0),(500,0),(0,500),(500,500)]
     draw = ImageDraw.Draw(collage)
 
-    try: font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 150)
+    try: font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 160)
     except: font = ImageFont.load_default()
 
     for i, img in enumerate(images):
         collage.paste(img, positions[i])
-        cx, cy = positions[i][0]+30, positions[i][1]+30
-        draw.ellipse((cx, cy, cx+160, cy+160), fill="#FFD700", outline="black", width=10)
-        draw.text((cx+40, cy-10), str(i+1), fill="black", font=font)
+        cx, cy = positions[i][0]+40, positions[i][1]+40
+        draw.ellipse((cx, cy, cx+100, cy+100), fill="#FFD700", outline="black", width=8)  # עיגול קטן יותר
+        draw.text((cx+15, cy-5), str(i+1), fill="black", font=font)  # מספר גדול וברור
 
     output = io.BytesIO()
-    collage.save(output, format='JPEG', quality=90)
+    collage.save(output, format='JPEG', quality=95)
     output.seek(0)
     return output
 
@@ -116,7 +147,7 @@ def handle_message(message):
     try:
         query = message.text.strip()
         if not query.lower().startswith("חפש לי"):
-            bot.reply_to(message, "שלום! כתבו 'חפש לי' ואת שם המוצר.")
+            bot.reply_to(message, "שלום! כתבו 'חפש לי' ואז שם המוצר.")
             return
 
         search_query = query[7:].strip()
@@ -124,10 +155,10 @@ def handle_message(message):
         products = search_aliexpress(search_query)
 
         if not products:
-            bot.edit_message_text("מצטער, לא נמצאו תוצאות.", message.chat.id, loading.message_id)
+            bot.edit_message_text("מצטער, לא נמצאו תוצאות מתאימות.", message.chat.id, loading.message_id)
             return
 
-        img_urls = [p['image'] for p in products]
+        img_urls = [p['image'] for p in products if p.get('image')]
         collage = create_collage(img_urls)
         bot.delete_message(message.chat.id, loading.message_id)
         bot.send_photo(message.chat.id, collage, caption=f"🎯 תוצאות עבור: <b>{search_query}</b>", parse_mode="HTML")
@@ -145,6 +176,9 @@ def handle_message(message):
         text_msg += "▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n🤖 <i>DrDeals</i>"
         markup.add(*buttons)
         bot.send_message(message.chat.id, text_msg, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
-    except: pass
+
+    except Exception as e:
+        print("ERROR:", e)
+        bot.send_message(message.chat.id, "אירעה תקלה בעיבוד הנתונים. אנא נסו שוב.")
 
 bot.infinity_polling()
