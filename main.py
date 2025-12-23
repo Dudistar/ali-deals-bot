@@ -21,10 +21,10 @@ def generate_sign(params):
     return hashlib.md5(s.encode('utf-8')).hexdigest().upper()
 
 def get_short_link(raw_url):
-    """קיצור קישור יציב"""
+    """קיצור קישור יציב - השהייה למקצוענות"""
     try:
         clean_url = raw_url.split('?')[0]
-        time.sleep(1.5) 
+        time.sleep(1.8) 
         params = {
             'app_key': APP_KEY, 'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
             'sign_method': 'md5', 'method': 'aliexpress.affiliate.link.generate',
@@ -39,7 +39,7 @@ def get_short_link(raw_url):
     return raw_url
 
 def search_aliexpress(keyword):
-    """חיפוש פרימיום - משלוח חינם וסינון חכם"""
+    """חיפוש פרימיום עם משלוח חינם בלבד"""
     try:
         try: en_keyword = GoogleTranslator(source='auto', target='en').translate(keyword).lower()
         except: en_keyword = keyword.lower()
@@ -47,19 +47,19 @@ def search_aliexpress(keyword):
         min_price = "0"
         bad_words = ['adapter', 'cable', 'mount', 'rear view', 'borescope', 'parts', 'cover']
         
-        # פתיחת חסימות למדבקות/DIY
+        # לוגיקת מדבקות/DIY - שחרור חסימות
         if any(w in en_keyword for w in ['stick', 'label', 'decal', 'custom', 'diy']):
             bad_words = []
         elif any(w in en_keyword for w in ['camera', 'dash', 'car']):
             en_keyword = f"70mai DDPai Dash Cam 4K GPS {en_keyword}"
-            min_price = "60"
+            min_price = "55"
 
         params = {
             'app_key': APP_KEY, 'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
             'sign_method': 'md5', 'method': 'aliexpress.affiliate.product.query',
             'partner_id': 'top-autopilot', 'format': 'json', 'v': '2.0',
             'keywords': en_keyword, 'target_currency': 'ILS', 'ship_to_country': 'IL',
-            'is_free_shipping': 'true', # משלוח חינם בלבד
+            'is_free_shipping': 'true', # פילטר משלוח חינם
             'min_sale_price': min_price, 'sort': 'RELEVANCE', 'page_size': '50'
         }
         params['sign'] = generate_sign(params)
@@ -82,14 +82,15 @@ def search_aliexpress(keyword):
             try: title_he = GoogleTranslator(source='auto', target='iw').translate(p['product_title'])
             except: title_he = p['product_title']
             output.append({
-                "title": title_he[:85] + "...", "price": p.get('target_sale_price', 'N/A'),
+                "title": title_he[:85], "price": p.get('target_sale_price', 'N/A'),
                 "image": p.get('product_main_image_url'), "raw_url": p.get('product_detail_url', ''),
                 "rating": round(float(str(p.get('evaluate_rate', '95')).replace('%',''))/20, 1) if p.get('evaluate_rate') else 4.8
             })
         return output
     except: return []
 
-def draw_elite_number(draw, cx, cy, num):
+def draw_small_number(draw, cx, cy, num):
+    """מספרים מינימליסטיים בפינה"""
     draw.ellipse((cx, cy, cx+35, cy+35), fill="#FFD700", outline="black", width=2)
     bx, by = cx + 13, cy + 7
     if num == 1: draw.rectangle([bx+2, by, bx+6, by+22], fill="black")
@@ -115,7 +116,7 @@ def create_collage(image_urls):
     positions, draw = [(0,0), (500,0), (0,500), (500,500)], ImageDraw.Draw(collage)
     for i, img in enumerate(images):
         collage.paste(img, positions[i])
-        draw_elite_number(draw, positions[i][0]+15, positions[i][1]+15, i+1)
+        draw_small_number(draw, positions[i][0]+15, positions[i][1]+15, i+1)
     output = io.BytesIO()
     collage.save(output, format='JPEG', quality=95)
     output.seek(0)
@@ -128,27 +129,31 @@ def handle_message(message):
         if not query.lower().startswith("חפש לי"): return
         search_query = query[7:].strip().lower()
         
-        loading = bot.send_message(message.chat.id, f"💎 <b>מחפש עבורכם דילים ל-'{search_query}'...</b>", parse_mode="HTML")
+        loading = bot.send_message(message.chat.id, f"🔍 <b>סורק את הרשת עבור: {search_query}...</b>", parse_mode="HTML")
         products = search_aliexpress(search_query)
         
         if not products:
-            bot.edit_message_text("לא נמצאו תוצאות איכותיות עם משלוח חינם.", message.chat.id, loading.message_id)
+            bot.edit_message_text("מצטער, לא נמצאו תוצאות איכותיות עם משלוח חינם.", message.chat.id, loading.message_id)
             return
 
         links = [get_short_link(p['raw_url']) for p in products]
         collage = create_collage([p['image'] for p in products])
         bot.delete_message(message.chat.id, loading.message_id)
-        bot.send_photo(message.chat.id, collage, caption=f"🎯 <b>נבחרת הדילים עבור: {search_query}</b>", parse_mode="HTML")
+        bot.send_photo(message.chat.id, collage, caption=f"🎯 <b>הדילים הכי טובים ל-{search_query}:</b>", parse_mode="HTML")
 
-        text_msg = "🏆 <b>TOP SELECTION - DrDeals Premium</b>\n" + "▬" * 15 + "\n\n"
+        # עיצוב מחדש בעברית מלאה
+        text_msg = "💎 <b>נבחרת הדילים של DrDeals</b>\n" + "—" * 12 + "\n\n"
         markup = types.InlineKeyboardMarkup(row_width=2)
         buttons = []
         for i, p in enumerate(products):
             short_url = links[i]
-            text_msg += f"{i+1}. 🏆 <b>{html.escape(p['title'])}</b>\n💰 מחיר: **{p['price']}₪** | ⭐ דירוג: **{p['rating']}**\n🚚 <b>משלוח חינם!</b>\n🔗 {short_url}\n\n"
+            text_msg += f"{i+1}. 🏆 <b>{html.escape(p['title'])}...</b>\n"
+            text_msg += f"💰 מחיר: <b>{p['price']}₪</b> | ⭐ דירוג: <b>{p['rating']}</b>\n"
+            text_msg += f"🚚 <b>משלוח חינם!</b>\n"
+            text_msg += f"🔗 {short_url}\n\n"
             buttons.append(types.InlineKeyboardButton(text=f"🎁 לקנייה {i+1}", url=short_url))
 
-        text_msg += "▬" * 15 + "\n👑 <b>Elite Search by DrDeals</b>"
+        text_msg += "—" * 12 + "\n🛍️ <b>קנייה מהנה! | DrDeals</b>"
         markup.add(*buttons)
         bot.send_message(message.chat.id, text_msg, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
     except: pass
