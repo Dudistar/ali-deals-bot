@@ -31,7 +31,7 @@ def normalize_rating(val):
 # ================== קיצור קישורים ==================
 def get_short_link(raw_url):
     try:
-        time.sleep(1.2)
+        time.sleep(3)  # השהיה ארוכה יותר
         params = {
             'app_key': APP_KEY,
             'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
@@ -49,17 +49,22 @@ def get_short_link(raw_url):
         pl = r.get('aliexpress_affiliate_link_generate_response', {}) \
               .get('resp_result', {}).get('result', {}) \
               .get('promotion_links', {}).get('promotion_link', [])
-        if pl:
-            return pl[0].get('promotion_short_link') or pl[0].get('promotion_link')
+        if pl and pl[0].get('promotion_short_link'):
+            return pl[0]['promotion_short_link']
     except:
         pass
     return raw_url
 
-# ================== חיפוש חכם ==================
+# ================== חיפוש חכם עם זיהוי כוונה ==================
 def search_aliexpress(keyword):
     try:
         en_kw = GoogleTranslator(source='auto', target='en').translate(keyword).lower()
         kw_words = en_kw.split()
+
+        # --- זיהוי כוונה ---
+        is_dashcam = any(k in en_kw for k in [
+            "dash", "dashcam", "car camera", "driving recorder", "vehicle camera"
+        ])
 
         params = {
             'app_key': APP_KEY,
@@ -84,24 +89,30 @@ def search_aliexpress(keyword):
         if isinstance(products, dict):
             products = [products]
 
-        bad_words = ['case', 'cover', 'cable', 'adapter', 'bag', 'mount']
+        banned_dashcam = [
+            'rear', 'reverse', 'backup', 'parking', 'endoscope',
+            'carplay', 'monitor', 'screen', 'display'
+        ]
+
         scored = []
 
         for p in products:
             title = p.get('product_title', '')
             title_l = title.lower()
+
+            # פסילה מוחלטת
+            if is_dashcam and any(b in title_l for b in banned_dashcam):
+                continue
+
             score = 0
 
             for w in kw_words:
                 if w in title_l:
                     score += 3
 
-            if any(b in title_l for b in bad_words) and not any(b in en_kw for b in bad_words):
-                score -= 4
-
             rating = normalize_rating(p.get('evaluate_rate'))
             if rating < 4.2:
-                score -= 5
+                continue
             elif rating >= 4.6:
                 score += 3
 
@@ -150,13 +161,13 @@ def create_collage(image_urls):
     draw = ImageDraw.Draw(canvas)
 
     try:
-        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 240)
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 300)
     except:
         font = ImageFont.load_default()
 
     pos = [(0,0),(500,0),(0,500),(500,500)]
-    circle_size = 180
-    green = "#25D366"  # WhatsApp green
+    circle_size = 120
+    green = "#25D366"
 
     for i, img in enumerate(imgs):
         canvas.paste(img, pos[i])
@@ -166,17 +177,16 @@ def create_collage(image_urls):
             (cx, cy, cx + circle_size, cy + circle_size),
             fill=green,
             outline="white",
-            width=8
+            width=6
         )
 
         num = str(i + 1)
         bbox = draw.textbbox((0, 0), num, font=font)
         tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
         tx = cx + (circle_size - tw) // 2
-        ty = cy + (circle_size - th) // 2 - 10
+        ty = cy + (circle_size - th) // 2 - 20
 
-        # outline למספר
-        for dx, dy in [(-3,0),(3,0),(0,-3),(0,3)]:
+        for dx, dy in [(-2,0),(2,0),(0,-2),(0,2)]:
             draw.text((tx+dx, ty+dy), num, fill="black", font=font)
 
         draw.text((tx, ty), num, fill="white", font=font)
@@ -199,7 +209,7 @@ def handle_message(m):
 
     products = search_aliexpress(query)
     if not products:
-        bot.edit_message_text("לא מצאתי תוצאות טובות כרגע.", m.chat.id, msg.message_id)
+        bot.edit_message_text("לא מצאתי תוצאות רלוונטיות כרגע.", m.chat.id, msg.message_id)
         return
 
     collage = create_collage([p['image'] for p in products])
