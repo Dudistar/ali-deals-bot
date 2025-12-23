@@ -25,7 +25,7 @@ def get_short_link(raw_url):
     """קיצור קישור בשיטת 'אל כשל' - איטי אבל 100% הצלחה"""
     try:
         clean_url = raw_url.split('?')[0]
-        time.sleep(3.0) # המתנה של 3 שניות כפי שביקשת - למקצוענות שיא
+        time.sleep(3.0) # המתנה של 3 שניות ליציבות מקסימלית
         params = {
             'app_key': APP_KEY, 'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
             'sign_method': 'md5', 'method': 'aliexpress.affiliate.link.generate',
@@ -41,15 +41,15 @@ def get_short_link(raw_url):
     return raw_url
 
 def search_aliexpress(keyword, offset=0):
-    """מנוע חיפוש ELITE - מזקק זבל ומביא פרימיום"""
+    """מנוע חיפוש חכם עם ביטול סינון עצמי"""
     try:
         en_keyword = GoogleTranslator(source='auto', target='en').translate(keyword).lower()
         
-        # --- הזרקת איכות (Injection) למניעת תוצאות 'שמאטע' ---
+        # סינון מחיר דינמי - רק לטכנולוגיה יקרה
         min_price = "0"
         if any(w in en_keyword for w in ['camera', 'dash', 'car']):
             en_keyword = f"70mai DDPai Dash Cam 4K GPS ADAS {en_keyword}"
-            min_price = "80" # רק מצלמות רציניות נכנסות
+            min_price = "80" 
         elif 'watch' in en_keyword:
             en_keyword = f"Amazfit Huawei Samsung Smart Watch {en_keyword}"
             min_price = "120"
@@ -60,7 +60,7 @@ def search_aliexpress(keyword, offset=0):
             'partner_id': 'top-autopilot', 'format': 'json', 'v': '2.0',
             'keywords': en_keyword, 'target_currency': 'ILS', 'ship_to_country': 'IL',
             'min_sale_price': min_price,
-            'sort': 'RELEVANCE', # רלוונטיות היא המפתח לדיוק של Elma
+            'sort': 'RELEVANCE',
             'page_size': '50'
         }
         params['sign'] = generate_sign(params)
@@ -68,14 +68,15 @@ def search_aliexpress(keyword, offset=0):
         products_raw = resp.get('aliexpress_affiliate_product_query_response', {}).get('resp_result', {}).get('result', {}).get('products', {}).get('product', [])
         if isinstance(products_raw, dict): products_raw = [products_raw]
 
-        # סינון אגרסיבי: רק מוצרים עם דירוג גבוה שאינם 'שמאטע'
-        bad_words = ['adapter', 'cable', 'mount', 'rear view', 'borescope', 'sticker', 'cover']
+        # רשימת 'שמאטע' - הסרתי את sticker כדי שתמצא מדבקות!
+        bad_words = ['adapter', 'cable', 'mount', 'rear view', 'borescope', 'cover']
         filtered = []
         for p in products_raw:
             title = p.get('product_title', '').lower()
             rating = float(str(p.get('evaluate_rate', '0')).replace('%', ''))
-            # חסימת מוצרים עם דירוג נמוך מ-4.6 (92%)
-            if not any(bw in title for bw in bad_words) and rating > 90:
+            # בחיפוש כללי (לא טכנולוגי) נהיה פחות קשוחים עם הדירוג
+            min_rating = 90 if min_price != "0" else 80 
+            if not any(bw in title for bw in bad_words) and rating > min_rating:
                 filtered.append(p)
         
         final_list = filtered[offset : offset + 4]
@@ -86,19 +87,17 @@ def search_aliexpress(keyword, offset=0):
             try: title_he = GoogleTranslator(source='auto', target='iw').translate(p['product_title'])
             except: title_he = p['product_title']
             
-            # הדגשת מפרט טכני (כמו המתחרה הגאון)
             tag = ""
             if '4k' in p['product_title'].lower(): tag = "💎 4K | "
-            elif 'sony' in p['product_title'].lower(): tag = "📸 SONY | "
-            elif 'gps' in p['product_title'].lower(): tag = "📍 GPS | "
+            elif 'custom' in p['product_title'].lower() or 'diy' in p['product_title'].lower(): tag = "✨ אישי | "
             
             output.append({
                 "title": tag + title_he[:90] + "...", 
                 "price": p.get('target_sale_price', 'N/A'),
                 "image": p.get('product_main_image_url'), 
                 "raw_url": p.get('product_detail_url', ''),
-                "rating": round(float(str(p.get('evaluate_rate', '95')).replace('%',''))/20, 1) if p.get('evaluate_rate') else 4.9, 
-                "orders": p.get('lastest_volume', "1K+"),
+                "rating": round(float(str(p.get('evaluate_rate', '95')).replace('%',''))/20, 1) if p.get('evaluate_rate') else 4.8, 
+                "orders": p.get('lastest_volume', "100+"),
                 "coupon": p.get('coupon_code')
             })
         return output
@@ -182,6 +181,5 @@ def handle_message(message):
         bot.send_message(chat_id, text_msg, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
     except: pass
 
-# פתרון לשגיאה 409 - מנקה הכל לפני הפעלה
 bot.remove_webhook()
 bot.infinity_polling(timeout=30, long_polling_timeout=15)
