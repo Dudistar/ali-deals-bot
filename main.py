@@ -8,7 +8,7 @@ from telebot import types
 from PIL import Image, ImageDraw
 from deep_translator import GoogleTranslator
 
-# --- הגדרות ---
+# --- הגדרות מערכת ---
 BOT_TOKEN = "8575064945:AAH_2WmHMH25TMFvt4FM6OWwfqFcDAaqCPw"
 APP_KEY = "523460"
 APP_SECRET = "Co7bNfYfqlu8KTdj2asXQV78oziICQEs"
@@ -17,14 +17,16 @@ TRACKING_ID = "DrDeals"
 bot = telebot.TeleBot(BOT_TOKEN)
 
 def generate_sign(params):
+    """חישוב חתימה מאובטחת לפי נוסחת MD5: 
+    $$Sign = MD5(Secret + SortedParams + Secret)$$"""
     s = APP_SECRET + ''.join([f"{k}{v}" for k, v in sorted(params.items())]) + APP_SECRET
     return hashlib.md5(s.encode('utf-8')).hexdigest().upper()
 
 def get_short_link(raw_url):
-    """קיצור קישור יציב - השהייה למקצוענות"""
+    """קיצור קישור בשיטת 'אל-כשל' - מבטיח הודעה מלאה תמיד"""
+    clean_url = raw_url.split('?')[0]
     try:
-        clean_url = raw_url.split('?')[0]
-        time.sleep(1.8) 
+        time.sleep(1.5) 
         params = {
             'app_key': APP_KEY, 'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
             'sign_method': 'md5', 'method': 'aliexpress.affiliate.link.generate',
@@ -32,14 +34,14 @@ def get_short_link(raw_url):
             'promotion_link_type': '0', 'source_values': clean_url, 'tracking_id': TRACKING_ID
         }
         params['sign'] = generate_sign(params)
-        resp = requests.post("https://api-sg.aliexpress.com/sync", data=params, timeout=12).json()
+        resp = requests.post("https://api-sg.aliexpress.com/sync", data=params, timeout=10).json()
         res = resp.get('aliexpress_affiliate_link_generate_response', {}).get('resp_result', {}).get('result', {}).get('promotion_links', {}).get('promotion_link', [])
         if res: return res[0].get('promotion_short_link') or res[0].get('promotion_link')
     except: pass
-    return raw_url
+    return clean_url # Fallback לקישור נקי
 
 def search_aliexpress(keyword):
-    """חיפוש פרימיום עם משלוח חינם בלבד"""
+    """מנוע חיפוש פרימיום מותאם אישית"""
     try:
         try: en_keyword = GoogleTranslator(source='auto', target='en').translate(keyword).lower()
         except: en_keyword = keyword.lower()
@@ -47,19 +49,20 @@ def search_aliexpress(keyword):
         min_price = "0"
         bad_words = ['adapter', 'cable', 'mount', 'rear view', 'borescope', 'parts', 'cover']
         
-        # לוגיקת מדבקות/DIY - שחרור חסימות
-        if any(w in en_keyword for w in ['stick', 'label', 'decal', 'custom', 'diy']):
-            bad_words = []
-        elif any(w in en_keyword for w in ['camera', 'dash', 'car']):
+        # הזרקת איכות חכמה - רק אם חיפשת מצלמת רכב
+        if 'dash' in en_keyword or ('camera' in en_keyword and 'car' in en_keyword):
             en_keyword = f"70mai DDPai Dash Cam 4K GPS {en_keyword}"
             min_price = "55"
+        elif any(w in en_keyword for w in ['stick', 'label', 'decal', 'custom', 'diy']):
+            bad_words = []
+            min_price = "0"
 
         params = {
             'app_key': APP_KEY, 'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
             'sign_method': 'md5', 'method': 'aliexpress.affiliate.product.query',
             'partner_id': 'top-autopilot', 'format': 'json', 'v': '2.0',
             'keywords': en_keyword, 'target_currency': 'ILS', 'ship_to_country': 'IL',
-            'is_free_shipping': 'true', # פילטר משלוח חינם
+            'is_free_shipping': 'true', # משלוח חינם בלבד
             'min_sale_price': min_price, 'sort': 'RELEVANCE', 'page_size': '50'
         }
         params['sign'] = generate_sign(params)
@@ -90,7 +93,6 @@ def search_aliexpress(keyword):
     except: return []
 
 def draw_small_number(draw, cx, cy, num):
-    """מספרים מינימליסטיים בפינה"""
     draw.ellipse((cx, cy, cx+35, cy+35), fill="#FFD700", outline="black", width=2)
     bx, by = cx + 13, cy + 7
     if num == 1: draw.rectangle([bx+2, by, bx+6, by+22], fill="black")
@@ -136,12 +138,15 @@ def handle_message(message):
             bot.edit_message_text("מצטער, לא נמצאו תוצאות איכותיות עם משלוח חינם.", message.chat.id, loading.message_id)
             return
 
-        links = [get_short_link(p['raw_url']) for p in products]
+        # הכנת הקישורים מראש לפני שליחת המדיה
+        links = []
+        for p in products:
+            links.append(get_short_link(p['raw_url']))
+        
         collage = create_collage([p['image'] for p in products])
         bot.delete_message(message.chat.id, loading.message_id)
         bot.send_photo(message.chat.id, collage, caption=f"🎯 <b>הדילים הכי טובים ל-{search_query}:</b>", parse_mode="HTML")
 
-        # עיצוב מחדש בעברית מלאה
         text_msg = "💎 <b>נבחרת הדילים של DrDeals</b>\n" + "—" * 12 + "\n\n"
         markup = types.InlineKeyboardMarkup(row_width=2)
         buttons = []
