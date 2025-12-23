@@ -3,14 +3,12 @@ import requests
 import io
 import hashlib
 import time
-import json
 import html
-import os
 from telebot import types
 from PIL import Image, ImageDraw, ImageFont
 from deep_translator import GoogleTranslator
 
-# --- המפתחות שלך ---
+# --- הפרטים שלך ---
 BOT_TOKEN = "8575064945:AAH_2WmHMH25TMFvt4FM6OWwfqFcDAaqCPw"
 APP_KEY = "523460"
 APP_SECRET = "Co7bNfYfqlu8KTdj2asXQV78oziICQEs"
@@ -80,6 +78,35 @@ def search_aliexpress(keyword):
         return output
     except: return None
 
+def draw_number(draw, cx, cy, num):
+    """מצייר מספר בצורה גרפית בתוך עיגול"""
+    # עיגול צהוב
+    draw.ellipse((cx, cy, cx+160, cy+160), fill="#FFD700", outline="black", width=10)
+    
+    # קורדינטות בסיס לציור בתוך העיגול
+    base_x = cx + 40
+    base_y = cy + 20
+    thickness = 20
+    
+    # ציור גרפי של ספרות 1-4
+    if num == 1:
+        draw.rectangle([base_x+30, base_y, base_x+30+thickness, base_y+120], fill="black")
+    elif num == 2:
+        draw.rectangle([base_x, base_y, base_x+80, base_y+thickness], fill="black")
+        draw.rectangle([base_x+80-thickness, base_y, base_x+80, base_y+60], fill="black")
+        draw.rectangle([base_x, base_y+60-thickness, base_x+80, base_y+60], fill="black")
+        draw.rectangle([base_x, base_y+60, base_x+thickness, base_y+120], fill="black")
+        draw.rectangle([base_x, base_y+120-thickness, base_x+80, base_y+120], fill="black")
+    elif num == 3:
+        draw.rectangle([base_x, base_y, base_x+80, base_y+thickness], fill="black")
+        draw.rectangle([base_x+80-thickness, base_y, base_x+80, base_y+120], fill="black")
+        draw.rectangle([base_x, base_y+60-thickness, base_x+80, base_y+60], fill="black")
+        draw.rectangle([base_x, base_y+120-thickness, base_x+80, base_y+120], fill="black")
+    elif num == 4:
+        draw.rectangle([base_x, base_y, base_x+thickness, base_y+60], fill="black")
+        draw.rectangle([base_x, base_y+60-thickness, base_x+80, base_y+60], fill="black")
+        draw.rectangle([base_x+80-thickness, base_y, base_x+80, base_y+120], fill="black")
+
 def create_collage(image_urls):
     images = []
     for url in image_urls:
@@ -94,34 +121,11 @@ def create_collage(image_urls):
     positions = [(0,0), (500,0), (0,500), (500,500)]
     draw = ImageDraw.Draw(collage)
 
-    # פתרון פונט גנרי ללינוקס כדי להבטיח הופעת מספרים
-    font = None
-    potential_fonts = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-        "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf"
-    ]
-    for p in potential_fonts:
-        if os.path.exists(p):
-            try:
-                font = ImageFont.truetype(p, 160)
-                break
-            except: pass
-    
-    if font is None:
-        font = ImageFont.load_default()
-
     for i, img in enumerate(images):
         collage.paste(img, positions[i])
         cx, cy = positions[i][0]+30, positions[i][1]+30
-        
-        # ציור העיגול
-        draw.ellipse((cx, cy, cx+160, cy+160), fill="#FFD700", outline="black", width=10)
-        
-        # כתיבת המספר - מירכוז משופר
-        msg = str(i+1)
-        # חישוב מרכז לעיגול
-        draw.text((cx + 45, cy - 15), msg, fill="black", font=font)
+        # שימוש בפונקציית הציור הגרפית
+        draw_number(draw, cx, cy, i+1)
 
     output = io.BytesIO()
     collage.save(output, format='JPEG', quality=85)
@@ -137,7 +141,7 @@ def handle_message(message):
             return
 
         search_query = query[7:].strip()
-        loading = bot.send_message(message.chat.id, f"🔎 מחפש דילים ל-'{search_query}'...")
+        loading = bot.send_message(message.chat.id, f"🔎 מחפש עבורכם דילים ל-'{search_query}'...")
         products = search_aliexpress(search_query)
 
         if not products:
