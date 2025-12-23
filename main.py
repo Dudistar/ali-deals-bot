@@ -21,10 +21,10 @@ def generate_sign(params):
     return hashlib.md5(s.encode('utf-8')).hexdigest().upper()
 
 def get_short_link(raw_url):
-    """קיצור קישור יציב - המתנה של 2.5 שניות מבטיחה הצלחה"""
+    """קיצור קישור יציב בשיטת בונקר"""
     try:
         clean_url = raw_url.split('?')[0]
-        time.sleep(2.5) 
+        time.sleep(2.2) 
         params = {
             'app_key': APP_KEY, 'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
             'sign_method': 'md5', 'method': 'aliexpress.affiliate.link.generate',
@@ -40,17 +40,17 @@ def get_short_link(raw_url):
     return raw_url
 
 def search_aliexpress(keyword):
-    """מנוע חיפוש פרימיום עם משלוח חינם"""
+    """מנוע חיפוש פרימיום עם משלוח חינם בלבד"""
     try:
         en_keyword = GoogleTranslator(source='auto', target='en').translate(keyword).lower()
         
-        # לוגיקת סינון חכמה
-        bad_words = ['adapter', 'cable', 'mount', 'rear view', 'borescope', 'parts', 'cover']
         min_price = "0"
+        bad_words = ['adapter', 'cable', 'mount', 'rear view', 'borescope', 'parts', 'cover']
         
-        # אם חיפשת מדבקות או כיסויים - ננקה את החסימה
-        if any(w in en_keyword for w in ['stick', 'label', 'decal', 'custom', 'cover']):
-            bad_words = []
+        # זיהוי חכם לביטול סינונים בחיפושי מדבקות/עיצוב אישי
+        if any(w in en_keyword for w in ['stick', 'label', 'decal', 'custom', 'diy']):
+            bad_words = [] 
+            min_price = "0"
         elif any(w in en_keyword for w in ['camera', 'dash', 'car', 'dvr']):
             en_keyword = f"70mai DDPai Dash Cam 4K GPS {en_keyword}"
             min_price = "60"
@@ -72,7 +72,7 @@ def search_aliexpress(keyword):
         for p in products_raw:
             title = p.get('product_title', '').lower()
             rating = float(str(p.get('evaluate_rate', '0')).replace('%', ''))
-            # סינון דירוג: 90% לטכנולוגיה, 80% לשאר
+            # סינון איכות: טכנולוגיה 90%, מוצרים אחרים 80%
             min_rate = 90 if min_price != "0" else 80
             if not any(bw in title for bw in bad_words) and rating >= min_rate:
                 filtered.append(p)
@@ -82,9 +82,12 @@ def search_aliexpress(keyword):
             try: title_he = GoogleTranslator(source='auto', target='iw').translate(p['product_title'])
             except: title_he = p['product_title']
             output.append({
-                "title": title_he[:80] + "...", "price": p.get('target_sale_price', 'N/A'),
-                "image": p.get('product_main_image_url'), "raw_url": p.get('product_detail_url', ''),
-                "rating": round(float(str(p.get('evaluate_rate', '95')).replace('%',''))/20, 1) if p.get('evaluate_rate') else 4.8
+                "title": title_he[:85] + "...", 
+                "price": p.get('target_sale_price', 'N/A'),
+                "image": p.get('product_main_image_url'), 
+                "raw_url": p.get('product_detail_url', ''),
+                "rating": round(float(str(p.get('evaluate_rate', '95')).replace('%',''))/20, 1) if p.get('evaluate_rate') else 4.8,
+                "orders": p.get('lastest_volume', "100+")
             })
         return output
     except: return None
@@ -130,14 +133,14 @@ def handle_message(message):
         if not query.lower().startswith("חפש לי"): return
         search_query = query[7:].strip().lower()
         
-        loading = bot.send_message(message.chat.id, f"💎 <b>מחפש עבורכם דילים מנצחים ל-'{search_query}'...</b>", parse_mode="HTML")
+        loading = bot.send_message(message.chat.id, f"💎 <b>שואב את הדילים המובחרים ביותר ל-'{search_query}'...</b>", parse_mode="HTML")
         products = search_aliexpress(search_query)
         
         if not products:
-            bot.edit_message_text("לא נמצאו תוצאות איכותיות עם משלוח חינם. נסו שוב.", message.chat.id, loading.message_id)
+            bot.edit_message_text("לא נמצאו תוצאות איכותיות עם משלוח חינם. נסו חיפוש שונה.", message.chat.id, loading.message_id)
             return
 
-        # הכנת הקישורים מראש כדי למנוע קריסה של ההודעה
+        # הכנת הקישורים לפני שליחת התמונה למניעת תקיעה
         final_links = [get_short_link(p['raw_url']) for p in products]
         
         collage = create_collage([p['image'] for p in products])
@@ -161,6 +164,10 @@ def handle_message(message):
         bot.send_message(message.chat.id, text_msg, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
     except: pass
 
-# פתרון לשגיאה 409 - ניקוי כל חיבור קודם
-bot.remove_webhook()
-bot.infinity_polling(timeout=60, long_polling_timeout=30)
+# --- הפתרון הסופי לשגיאת 409 ---
+try:
+    bot.remove_webhook()
+    print("Bot is LIVE and cleaning old connections...")
+    bot.infinity_polling(timeout=60, long_polling_timeout=30)
+except Exception as e:
+    print(f"Polling error: {e}")
