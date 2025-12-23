@@ -8,7 +8,7 @@ from telebot import types
 from PIL import Image, ImageDraw, ImageFont
 from deep_translator import GoogleTranslator
 
-# --- הפרטים שלך ---
+# --- הפרטים המדויקים שלך ---
 BOT_TOKEN = "8575064945:AAH_2WmHMH25TMFvt4FM6OWwfqFcDAaqCPw"
 APP_KEY = "523460"
 APP_SECRET = "Co7bNfYfqlu8KTdj2asXQV78oziICQEs"
@@ -52,12 +52,11 @@ def search_aliexpress(keyword, offset=0):
         products_raw = resp.get('aliexpress_affiliate_product_query_response', {}).get('resp_result', {}).get('result', {}).get('products', {}).get('product', [])
         if isinstance(products_raw, dict): products_raw = [products_raw]
 
-        bad_words = ['case', 'cover', 'adapter', 'cable', 'mount', 'parts']
+        bad_words = ['case', 'cover', 'adapter', 'cable', 'mount']
         results, backup = [], []
         
         for p in products_raw:
             title = p.get('product_title', '').lower()
-            # סינון חכם: אם מילה "רעה" נמצאת בכותרת אבל לא בחיפוש המקורי - זה הולך לגיבוי
             is_bad = any(bw in title for bw in bad_words) and not any(bw in en_keyword for bw in bad_words)
             if not is_bad: results.append(p)
             else: backup.append(p)
@@ -71,13 +70,17 @@ def search_aliexpress(keyword, offset=0):
             try: title_he = GoogleTranslator(source='auto', target='iw').translate(p['product_title'])
             except: title_he = p['product_title']
             
+            # --- הארכת הטקסט ל-85 תווים ---
+            if len(title_he) > 85:
+                title_he = title_he[:82] + "..."
+
             try:
                 val = float(str(p.get('evaluate_rate', '95')).replace('%', ''))
                 rate = round(val / 20, 1) if val > 5 else round(val, 1)
             except: rate = 4.8
 
             output.append({
-                "title": title_he[:50] + "...", "price": p.get('target_sale_price', 'N/A'),
+                "title": title_he, "price": p.get('target_sale_price', 'N/A'),
                 "image": p.get('product_main_image_url'), "raw_url": p.get('product_detail_url', ''),
                 "rating": rate, "orders": p.get('lastest_volume', "Top"), "discount": p.get('discount', '0%')
             })
@@ -85,7 +88,7 @@ def search_aliexpress(keyword, offset=0):
     except: return None
 
 def draw_number(draw, cx, cy, num):
-    """ציור גרפי ידני של המספרים כדי שלא יעלמו בגלל פונטים חסרים"""
+    """ציור גרפי של המספרים בעיגולים צהובים"""
     draw.ellipse((cx, cy, cx+160, cy+160), fill="#FFD700", outline="black", width=10)
     base_x, base_y, thick = cx + 45, cy + 30, 18
     if num == 1: draw.rectangle([base_x+20, base_y, base_x+20+thick, base_y+100], fill="black")
@@ -140,7 +143,7 @@ def handle_message(message):
                 if offset >= 40: offset = 0
             
         user_sessions[chat_id] = {'query': search_query, 'time': current_time, 'offset': offset}
-        loading = bot.send_message(chat_id, f"🔎 מחפש עבורכם דילים ל-'{search_query}'...")
+        loading = bot.send_message(chat_id, f"🔎 מחפש מוצרים חדשים ל-'{search_query}'...")
         products = search_aliexpress(search_query, offset=offset)
 
         if not products:
