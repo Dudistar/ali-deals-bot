@@ -26,7 +26,7 @@ TRACKING_ID = "DrDeals"
 
 print("🔄 מתחבר לטלגרם...")
 bot = telebot.TeleBot(BOT_TOKEN)
-print("✅ הבוט מחובר - גרסת הכל-כלול (ברוכים הבאים + תמונה)")
+print("✅ הבוט מחובר - גרסה נקייה (ללא הבטחת תמונות)")
 
 class FreeSmartEngine:
     def __init__(self):
@@ -251,10 +251,11 @@ def send_results_to_user(chat_id, products, query_text):
     bot.send_message(chat_id, text_msg, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
 
 # ==========================================================
-#  הנדלר לפקודת ההתחלה (ברוכים הבאים + תמונה)
+#  הנדלר לפקודת ההתחלה - מעודכן (בלי תמונות)
 # ==========================================================
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
+    # הטקסט המעודכן ללא אזכור חיפוש תמונה
     welcome_text = (
         "👋 <b>ברוכים הבאים ל-DrDeals!</b>\n"
         "הבוט החכם שימצא לכם את הדילים הכי שווים באליאקספרס.\n\n"
@@ -269,8 +270,6 @@ def send_welcome(message):
         "• <i>חפש לי אוזניות אלחוטיות</i>\n"
         "• <i>חפש לי שעון חכם</i>\n"
         "• <i>חפש לי מטען מהיר לאייפון</i>\n\n"
-        "📸 <b>חדש! חיפוש לפי תמונה</b>\n"
-        "שלחו לי תמונה של מוצר, ואנסה למצוא אותו.\n\n"
         "👇 <b>קדימה, נסו אותי! כתבו לי משהו...</b>"
     )
 
@@ -287,17 +286,16 @@ def send_welcome(message):
             with open('welcome.jpg', 'rb') as photo:
                 bot.send_photo(message.chat.id, photo, caption=welcome_text, parse_mode="HTML", reply_markup=markup)
         except:
-            # אם הייתה שגיאה בקריאת התמונה, שלח רק טקסט
             bot.send_message(message.chat.id, welcome_text, parse_mode="HTML", reply_markup=markup)
     else:
-        # אם אין תמונה, שלח רק טקסט
         bot.send_message(message.chat.id, welcome_text, parse_mode="HTML", reply_markup=markup)
 
-# --- הנדלר לתמונות ---
+# --- הנדלר לתמונות (נשאר מוסתר ברקע) ---
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
+    # כאן לא שיניתי, כדי שאם בטעות ישלחו לא יקרוס, אבל זה לא מפורסם
     try:
-        loading = bot.send_message(message.chat.id, "📸 <b>קולט תמונה ומפעיל סריקה ויזואלית...</b>", parse_mode="HTML")
+        loading = bot.send_message(message.chat.id, "📸 <b>קולט תמונה ומפעיל סריקה...</b>", parse_mode="HTML")
         file_info = bot.get_file(message.photo[-1].file_id)
         downloaded_file = bot.download_file(file_info.file_path)
         
@@ -305,9 +303,10 @@ def handle_photo(message):
         bot.delete_message(message.chat.id, loading.message_id)
         
         if products is None:
-            bot.send_message(message.chat.id, "⚠️ <b>אופס!</b>\nחיפוש לפי תמונה דורש הרשאה מיוחדת שעדיין לא הופעלה.\nאנא כתוב לי את שם המוצר במקום.", parse_mode="HTML")
+             # הודעה מעודכנת - יותר כללית
+            bot.send_message(message.chat.id, "⚠️ <b>חיפוש לפי תמונה לא זמין כרגע.</b>\nאנא כתוב לי את שם המוצר במקום.", parse_mode="HTML")
         elif not products:
-             bot.send_message(message.chat.id, "❌ לא מצאתי מוצר דומה בתמונה. נסה לצלם ברור יותר או לכתוב את השם.")
+             bot.send_message(message.chat.id, "❌ לא מצאתי מוצר דומה.")
         else:
             send_results_to_user(message.chat.id, products, "סריקת תמונה")
     except Exception as e:
