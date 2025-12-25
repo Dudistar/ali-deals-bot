@@ -6,6 +6,7 @@ import time
 import html
 import json
 import re
+import os
 from telebot import types
 from PIL import Image, ImageDraw
 
@@ -25,7 +26,7 @@ TRACKING_ID = "DrDeals"
 
 print("🔄 מתחבר לטלגרם...")
 bot = telebot.TeleBot(BOT_TOKEN)
-print("✅ הבוט מחובר - גרסת סורק יציבה + הנחות")
+print("✅ הבוט מחובר - גרסת הכל-כלול (טקסט + תמונה)")
 
 class FreeSmartEngine:
     def __init__(self):
@@ -48,25 +49,22 @@ class FreeSmartEngine:
             return user_query
 
     def _extract_number(self, val):
-        """פונקציית עזר לחילוץ מספרים"""
+        """חילוץ מספר נקי"""
         try:
             val_str = str(val).lower().replace(',', '').replace('+', '').strip()
             if not val_str or val_str == '0': return 0
-            
             match = re.search(r'(\d+(?:\.\d+)?)', val_str)
             if not match: return 0
-            
             num = float(match.group(1))
             if 'k' in val_str: num *= 1000
             elif 'm' in val_str: num *= 1000000
             elif 'w' in val_str: num *= 10000
-            
             return int(num)
         except:
             return 0
 
     def _parse_sales(self, p):
-        """הסורק האוניברסלי - למכירות"""
+        """הסורק האוניברסלי"""
         best_sales = 0
         for key, val in p.items():
             k_str = str(key).lower()
@@ -76,85 +74,103 @@ class FreeSmartEngine:
                     best_sales = current_sales
         return best_sales
 
-    def search(self, original_query):
-        print(f"🔎 מחפש: {original_query}")
+    def _process_results(self, resp_json):
+        """עיבוד תוצאות אחיד (משותף לטקסט ולתמונה)"""
+        data = resp_json.get('aliexpress_affiliate_product_query_response', {}).get('resp_result', {}).get('result', {})
+        # לפעמים בחיפוש תמונה המבנה קצת שונה, ננסה להתאים
+        if not data:
+            data = resp_json.get('aliexpress_affiliate_image_search_response', {}).get('resp_result', {}).get('result', {})
+            
+        products_raw = data.get('products', {}).get('product', [])
+        if not products_raw: return []
+        if isinstance(products_raw, dict): products_raw = [products_raw]
+
+        parsed_products = []
+        for p in products_raw:
+            try:
+                sales = self._parse_sales(p)
+                rate_str = str(p.get('evaluate_rate', '0')).replace('%', '')
+                rating = float(rate_str) / 20 if rate_str else 0.0
+                
+                try: title_he = GoogleTranslator(source='auto', target='iw').translate(p['product_title'])
+                except: title_he = p['product_title']
+
+                try: price = float(p.get('target_sale_price', 0))
+                except: price = 0
+                try: orig_price = float(p.get('target_original_price', 0))
+                except: orig_price = 0
+                
+                discount = 0
+                if orig_price > price and price > 0:
+                    discount = int(round((1 - (price / orig_price)) * 100))
+
+                parsed_products.append({
+                    "title": title_he[:85],
+                    "price": price,
+                    "orig_price": orig_price,
+                    "discount": discount,
+                    "image": p.get('product_main_image_url'),
+                    "raw_url": p.get('product_detail_url', ''),
+                    "rating": round(rating, 1),
+                    "sales": sales
+                })
+            except: continue
+
+        # מיון לפי מכירות
+        parsed_products.sort(key=lambda x: x['sales'], reverse=True)
+        return parsed_products[:4]
+
+    def search_text(self, original_query):
+        print(f"🔎 מחפש טקסט: {original_query}")
         smart_keywords = self._enhance_query(original_query)
-        
         params = {
-            'app_key': APP_KEY,
-            'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
-            'sign_method': 'md5',
-            'method': 'aliexpress.affiliate.product.query',
-            'partner_id': 'top-autopilot',
-            'format': 'json',
-            'v': '2.0',
-            'keywords': smart_keywords,
-            'target_currency': 'ILS',
-            'ship_to_country': 'IL',
-            'sort': 'LAST_VOLUME_DESC',
-            'page_size': '50',
+            'app_key': APP_KEY, 'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'sign_method': 'md5', 'method': 'aliexpress.affiliate.product.query',
+            'partner_id': 'top-autopilot', 'format': 'json', 'v': '2.0',
+            'keywords': smart_keywords, 'target_currency': 'ILS', 'ship_to_country': 'IL',
+            'sort': 'LAST_VOLUME_DESC', 'page_size': '50',
         }
         params['sign'] = generate_sign(params)
-        
         try:
             resp = requests.post("https://api-sg.aliexpress.com/sync", data=params, timeout=15).json()
-            data = resp.get('aliexpress_affiliate_product_query_response', {}).get('resp_result', {}).get('result', {})
-            products_raw = data.get('products', {}).get('product', [])
-            
-            if not products_raw: return []
-            if isinstance(products_raw, dict): products_raw = [products_raw]
-
-            parsed_products = []
-            for p in products_raw:
-                try:
-                    sales = self._parse_sales(p)
-                    
-                    rate_str = str(p.get('evaluate_rate', '0')).replace('%', '')
-                    rating = float(rate_str) / 20 if rate_str else 0.0
-                    
-                    try: title_he = GoogleTranslator(source='auto', target='iw').translate(p['product_title'])
-                    except: title_he = p['product_title']
-
-                    # --- חישוב הנחה ---
-                    try: price = float(p.get('target_sale_price', 0))
-                    except: price = 0
-                    
-                    try: orig_price = float(p.get('target_original_price', 0))
-                    except: orig_price = 0
-                    
-                    discount = 0
-                    if orig_price > price and price > 0:
-                        discount = int(round((1 - (price / orig_price)) * 100))
-
-                    parsed_products.append({
-                        "title": title_he[:85],
-                        "price": price, # שומרים כמספר לחישובים
-                        "orig_price": orig_price,
-                        "discount": discount,
-                        "image": p.get('product_main_image_url'),
-                        "raw_url": p.get('product_detail_url', ''),
-                        "rating": round(rating, 1),
-                        "sales": sales
-                    })
-                except: continue
-
-            # מדרג איכות בסיסי
-            premium = [p for p in parsed_products if p['rating'] >= 4.7 and p['sales'] >= 10]
-            if len(premium) >= 2:
-                premium.sort(key=lambda x: x['sales'], reverse=True)
-                return premium[:4]
-            
-            good = [p for p in parsed_products if p['rating'] >= 4.5]
-            if len(good) >= 1:
-                good.sort(key=lambda x: x['sales'], reverse=True)
-                return good[:4]
-            
-            parsed_products.sort(key=lambda x: x['sales'], reverse=True)
-            return parsed_products[:4]
-
+            return self._process_results(resp)
         except Exception as e:
-            print(f"❌ שגיאה בחיפוש: {e}")
+            print(f"❌ שגיאה בחיפוש טקסט: {e}")
             return []
+
+    def search_image(self, image_bytes):
+        print("📸 מנסה חיפוש לפי תמונה...")
+        # פרמטרים לחיפוש תמונה
+        params = {
+            'app_key': APP_KEY, 'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'sign_method': 'md5', 'method': 'aliexpress.affiliate.image.search',
+            'partner_id': 'top-autopilot', 'format': 'json', 'v': '2.0',
+            'target_currency': 'ILS', 'ship_to_country': 'IL',
+            'sort': 'LAST_VOLUME_DESC', 'page_size': '20',
+            'img_file_bytes': 'BINARY_PLACEHOLDER' # לא נכנס לחתימה, רק לסימון
+        }
+        
+        # יצירת חתימה ללא תוכן הקובץ (רק פרמטרים טקסטואליים)
+        sign_params = {k: v for k, v in params.items() if k != 'img_file_bytes'}
+        params['sign'] = generate_sign(sign_params)
+        
+        # הסרת הפלייסגולדר לפני השליחה
+        del params['img_file_bytes']
+
+        try:
+            # שליחה ב-Multipart (חובה לתמונות)
+            files = {'img_file_bytes': ('search.jpg', image_bytes, 'image/jpeg')}
+            resp = requests.post("https://api-sg.aliexpress.com/sync", data=params, files=files, timeout=20).json()
+            
+            # בדיקת שגיאות נפוצות בחיפוש תמונה
+            if 'error_response' in resp:
+                print(f"⚠️ שגיאת תמונה: {resp['error_response']}")
+                return None
+                
+            return self._process_results(resp)
+        except Exception as e:
+            print(f"❌ שגיאה בחיפוש תמונה: {e}")
+            return None
 
 engine = FreeSmartEngine()
 
@@ -213,57 +229,88 @@ def create_collage(image_urls):
     output.seek(0)
     return output
 
+# פונקציה משותפת לשליחת תוצאות (מונעת כפילות קוד)
+def send_results_to_user(chat_id, products, query_text):
+    if not products:
+        bot.send_message(chat_id, "❌ לא מצאתי תוצאות. נסה חיפוש אחר.")
+        return
+
+    links = []
+    for p in products: links.append(get_short_link(p['raw_url']))
+    collage = create_collage([p['image'] for p in products])
+    
+    bot.send_photo(chat_id, collage, caption=f"🎯 <b>תוצאות עבור: {query_text}</b>", parse_mode="HTML")
+
+    text_msg = "💎 <b>נבחרת הדילים של DrDeals</b>\n" + "—" * 12 + "\n\n"
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    buttons = []
+    
+    for i, p in enumerate(products):
+        short_url = links[i]
+        
+        text_msg += f"{i+1}. 🏆 <b>{html.escape(p['title'])}</b>\n"
+        text_msg += f"💰 מחיר: <b>{p['price']}₪</b> | ⭐ דירוג: <b>{p['rating']}</b>\n"
+        
+        if p['discount'] > 0:
+             text_msg += f"📉 <b>{p['discount']}% הנחה!</b> (במקום {p['orig_price']}₪)\n"
+
+        if p['sales'] > 0:
+            text_msg += f"🔥 נחטף ע''י: <b>{p['sales']}+ רוכשים</b>\n"
+        else:
+            text_msg += f"✨ <b>פריט מבוקש ומומלץ</b>\n"
+            
+        text_msg += f"🚚 <b>משלוח מהיר / Choice</b>\n"
+        text_msg += f"🔗 {short_url}\n\n"
+        
+        buttons.append(types.InlineKeyboardButton(text=f"🎁 לקנייה {i+1}", url=short_url))
+
+    text_msg += "—" * 12 + "\n🛍️ <b>קנייה מהנה! | DrDeals</b>"
+    markup.add(*buttons)
+    bot.send_message(chat_id, text_msg, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
+
+# --- הנדלר לתמונות (חדש!) ---
+@bot.message_handler(content_types=['photo'])
+def handle_photo(message):
+    try:
+        loading = bot.send_message(message.chat.id, "📸 <b>קולט תמונה ומפעיל סריקה ויזואלית...</b>", parse_mode="HTML")
+        
+        # הורדת התמונה מהשרת של טלגרם
+        file_info = bot.get_file(message.photo[-1].file_id)
+        downloaded_file = bot.download_file(file_info.file_path)
+        
+        # שליחה לאליאקספרס
+        products = engine.search_image(downloaded_file)
+        
+        bot.delete_message(message.chat.id, loading.message_id)
+        
+        if products is None:
+            # אם חזר None, סימן שיש שגיאת הרשאות ב-API
+            bot.send_message(message.chat.id, "⚠️ <b>אופס!</b>\nחיפוש לפי תמונה דורש הרשאה מיוחדת שעדיין לא הופעלה בחשבון ה-Affiliate הזה.\nאנא כתוב לי את שם המוצר במקום.", parse_mode="HTML")
+        elif not products:
+             bot.send_message(message.chat.id, "❌ לא מצאתי מוצר דומה בתמונה. נסה לצלם ברור יותר או לכתוב את השם.")
+        else:
+            send_results_to_user(message.chat.id, products, "סריקת תמונה")
+            
+    except Exception as e:
+        print(f"Error photo: {e}")
+        bot.send_message(message.chat.id, "תקלה בעיבוד התמונה.")
+
+# --- הנדלר לטקסט ---
 @bot.message_handler(func=lambda message: True)
-def handle_message(message):
+def handle_text(message):
     try:
         query = message.text.strip()
         if not query.lower().startswith("חפש לי"): return
         search_query = query[7:].strip()
         
-        loading = bot.send_message(message.chat.id, f"🔍 <b>סורק את הרשת עבור: {search_query}...</b>", parse_mode="HTML")
-        products = engine.search(search_query)
+        loading = bot.send_message(message.chat.id, f"🔍 <b>סורק עבור: {search_query}...</b>", parse_mode="HTML")
+        products = engine.search_text(search_query)
         
-        if not products:
-            bot.edit_message_text("❌ לא מצאתי תוצאות איכותיות. נסה חיפוש אחר.", message.chat.id, loading.message_id)
-            return
-
-        links = []
-        for p in products: links.append(get_short_link(p['raw_url']))
-        collage = create_collage([p['image'] for p in products])
         bot.delete_message(message.chat.id, loading.message_id)
+        send_results_to_user(message.chat.id, products, search_query)
         
-        bot.send_photo(message.chat.id, collage, caption=f"🎯 <b>הדילים הכי טובים ל-{search_query}:</b>", parse_mode="HTML")
-
-        text_msg = "💎 <b>נבחרת הדילים של DrDeals</b>\n" + "—" * 12 + "\n\n"
-        markup = types.InlineKeyboardMarkup(row_width=2)
-        buttons = []
-        
-        for i, p in enumerate(products):
-            short_url = links[i]
-            
-            text_msg += f"{i+1}. 🏆 <b>{html.escape(p['title'])}</b>\n"
-            text_msg += f"💰 מחיר: <b>{p['price']}₪</b> | ⭐ דירוג: <b>{p['rating']}</b>\n"
-            
-            # --- תוספת: הצגת ההנחה ---
-            if p['discount'] > 0:
-                 text_msg += f"📉 <b>{p['discount']}% הנחה!</b> (במקום {p['orig_price']}₪)\n"
-            # --------------------------
-
-            if p['sales'] > 0:
-                text_msg += f"🔥 נחטף ע''י: <b>{p['sales']}+ רוכשים</b>\n"
-            else:
-                text_msg += f"✨ <b>פריט מבוקש ומומלץ</b>\n"
-                
-            text_msg += f"🚚 <b>משלוח מהיר / Choice</b>\n"
-            text_msg += f"🔗 {short_url}\n\n"
-            
-            buttons.append(types.InlineKeyboardButton(text=f"🎁 לקנייה {i+1}", url=short_url))
-
-        text_msg += "—" * 12 + "\n🛍️ <b>קנייה מהנה! | DrDeals</b>"
-        markup.add(*buttons)
-        bot.send_message(message.chat.id, text_msg, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error text: {e}")
 
 bot.remove_webhook()
 bot.infinity_polling(timeout=60)
