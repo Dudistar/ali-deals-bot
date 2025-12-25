@@ -177,15 +177,23 @@ def start(m):
         "👇 <b>תנסו אותי עכשיו:</b>"
     )
     
-    # תפריט כפתורים קבוע ונוח
+    # תפריט כפתורים קבוע
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     btn1 = types.KeyboardButton("חפש לי רחפן")
     btn2 = types.KeyboardButton("חפש לי אוזניות")
     btn3 = types.KeyboardButton("חפש לי שעון חכם")
-    btn4 = types.KeyboardButton("❓ עזרה וטיפים") # כפתור עזרה חדש
+    btn4 = types.KeyboardButton("❓ עזרה וטיפים")
     markup.add(btn1, btn2, btn3, btn4)
     
-    bot.send_message(m.chat.id, welcome_msg, parse_mode="HTML", reply_markup=markup)
+    # בדיקה אם קיימת תמונה ושליחתה
+    if os.path.exists('welcome.jpg'):
+        try:
+            with open('welcome.jpg', 'rb') as photo:
+                bot.send_photo(m.chat.id, photo, caption=welcome_msg, parse_mode="HTML", reply_markup=markup)
+        except:
+            bot.send_message(m.chat.id, welcome_msg, parse_mode="HTML", reply_markup=markup)
+    else:
+        bot.send_message(m.chat.id, welcome_msg, parse_mode="HTML", reply_markup=markup)
 
 @bot.message_handler(commands=['help'])
 def help_command(m):
@@ -212,7 +220,6 @@ def handle_help_text(m):
 @bot.message_handler(func=lambda m: True)
 def handle_text(m):
     if "חפש לי" not in m.text: 
-        # אם המשתמש סתם כותב טקסט בלי "חפש לי", נזכיר לו איך משתמשים
         if len(m.text) > 3:
              bot.reply_to(m, "💡 כדי לחפש, אנא התחל את המשפט ב-**'חפש לי'** (למשל: 'חפש לי רמקול בלוטוס').")
         return
@@ -257,7 +264,6 @@ def handle_text(m):
             sales = p.get('lastest_volume', 0)
             link = get_short_link(p.get('product_detail_url'))
             
-            # לינק גלוי
             full_text += f"{i+1}. 🏅 <b>{title_he[:55]}...</b>\n"
             full_text += f"💰 מחיר: <b>{price}₪</b>{discount_txt}\n"
             full_text += f"⭐ דירוג איכות: <b>{p.get('evaluate_rate', '4.8')}</b>\n"
