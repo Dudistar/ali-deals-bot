@@ -7,43 +7,38 @@ import html
 import json
 import re
 import os
+import statistics
 import google.generativeai as genai
 from telebot import types
 from PIL import Image, ImageDraw
 
-# ניסיון לייבא תרגום, אם אין - לא נורא
 try:
     from deep_translator import GoogleTranslator
 except ImportError:
     pass
 
 # ==========================================
-# הגדרות ופרטים אישיים (הכל מעודכן בפנים)
+# הגדרות מערכת
 # ==========================================
 BOT_TOKEN = "8575064945:AAH_2WmHMH25TMFvt4FM6OWwfqFcDAaqCPw"
 APP_KEY = "523460"
 APP_SECRET = "Co7bNfYfqlu8KTdj2asXQV78oziICQEs"
 TRACKING_ID = "DrDeals"
 ADMIN_ID = 173837076
-
-# המפתח שלך לגוגל (AI)
 GEMINI_API_KEY = "AIzaSyDNkixE64pO0muWxcqD2qtwZbTiH9UHT7w"
 
-# חיבור למוח של גוגל
+# הגדרת AI
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-1.5-flash')
 
-print("🔄 מתחבר לטלגרם...")
 bot = telebot.TeleBot(BOT_TOKEN)
-print("✅ הבוט מחובר - גרסת ה-AI המלאה")
 
 class FreeSmartEngine:
     def __init__(self):
-        pass
+        self.universal_blacklist = ["link", "box", "deposit", "shipping fee", "extra fee"]
 
     def _enhance_query(self, user_query):
         try:
-            # מתרגם לאנגלית כדי שאליאקספרס יבינו
             return GoogleTranslator(source='auto', target='en').translate(user_query).lower()
         except:
             return user_query
@@ -71,56 +66,54 @@ class FreeSmartEngine:
                     best_sales = current_sales
         return best_sales
 
+    # --- מסנן גיבוי: סטטיסטי (אם ה-AI נכשל) ---
+    def _fallback_statistical_filter(self, products):
+        if not products or len(products) < 5: return products
+        prices = [p['price'] for p in products if p['price'] > 0]
+        if not prices: return products
+        
+        median_price = statistics.median(prices)
+        # מעיף כל מה שזול מ-30% מהמחיר הממוצע (מסנן זבל)
+        threshold = median_price * 0.3
+        
+        clean = [p for p in products if p['price'] >= threshold]
+        return clean if clean else products
+
+    # --- מסנן ראשי: AI ---
     def _filter_with_ai(self, products, user_query):
-        """
-        כאן הקסם קורה: שולחים את הרשימה לגוגל והוא אומר מה זבל ומה זהב
-        """
         if not products: return []
         
-        # בניית הרשימה לבדיקה
-        products_list_text = ""
-        for i, p in enumerate(products):
-            products_list_text += f"ID {i}: {p['title_en']} (Price: {p['price']} ILS)\n"
+        # הכנת הרשימה ל-AI
+        products_text = "\n".join([f"ID {i}: {p['title_en']} (Price: {p['price']})" for i, p in enumerate(products)])
 
-        # ההוראה למוח של גוגל
         prompt = f"""
-        User searched for: "{user_query}".
-        I have a list of products from AliExpress.
-        Identify ONLY the products that actully match the user's intent to buy the MAIN ITEM.
+        Query: "{user_query}"
+        Task: Select items that match the query INTENT (Main product only).
+        Exclude: Accessories, parts, batteries, cases, boxes, cheap replacements.
         
-        Strict Filtering Rules:
-        1. If user asks for "Drone", include ONLY the drone itself. EXCLUDE parts, batteries, propellers, lights, or accessories.
-        2. If user asks for "Pants" or "Trousers", EXCLUDE pajamas, sleepwear, shorts, or underwear.
-        3. If user asks for "Phone", EXCLUDE cases, covers, and glass protectors.
+        List:
+        {products_text}
         
-        Here is the product list:
-        {products_list_text}
-        
-        Return ONLY the IDs of the correct products, separated by commas (e.g., 0, 3, 4).
-        If none match, return nothing.
+        Output: Just the IDs numbers separated by comma. If none, say NONE.
         """
 
         try:
             response = model.generate_content(prompt)
-            valid_ids_text = response.text.strip()
+            text_resp = response.text.strip()
             
-            if not valid_ids_text: return []
+            # שליפת מספרים גם אם ה-AI מקשקש מסביב
+            valid_ids = [int(s) for s in re.findall(r'\b\d+\b', text_resp)]
             
-            # פענוח התשובה
-            valid_indices = []
-            for x in valid_ids_text.split(','):
-                clean_x = x.strip()
-                if clean_x.isdigit():
-                    valid_indices.append(int(clean_x))
+            if not valid_ids: 
+                return [] # ה-AI החליט שכלום לא מתאים
             
-            # יצירת הרשימה הנקייה
-            clean_products = [products[i] for i in valid_indices if i < len(products)]
-            return clean_products
+            return [products[i] for i in valid_ids if i < len(products)]
 
         except Exception as e:
-            print(f"⚠️ AI Filter Error: {e}")
-            # במקרה תקלה בגוגל - נחזיר את הרשימה כמו שהיא
-            return products
+            # דיווח על שגיאה למנהל כדי שנבין למה זה לא עובד
+            error_msg = f"⚠️ **AI Error:** {str(e)}"
+            bot.send_message(ADMIN_ID, error_msg, parse_mode="Markdown")
+            return None # מסמן שהייתה תקלה
 
     def _process_results(self, resp_json, search_term_en="", original_query_he=""):
         data = resp_json.get('aliexpress_affiliate_product_query_response', {}).get('resp_result', {}).get('result', {})
@@ -129,74 +122,71 @@ class FreeSmartEngine:
         if isinstance(products_raw, dict): products_raw = [products_raw]
 
         parsed_products = []
-        
         for p in products_raw:
             try:
-                sales = self._parse_sales(p)
                 title_en = p['product_title']
+                if any(bad in title_en.lower() for bad in self.universal_blacklist): continue
                 
-                try: title_he = GoogleTranslator(source='auto', target='iw').translate(p['product_title'])
-                except: title_he = p['product_title']
+                try: title_he = GoogleTranslator(source='auto', target='iw').translate(title_en)
+                except: title_he = title_en
 
-                try: price = float(p.get('target_sale_price', 0))
-                except: price = 0
+                price = float(p.get('target_sale_price', 0))
+                orig_price = float(p.get('target_original_price', 0))
+                discount = int(round((1 - (price / orig_price)) * 100)) if orig_price > price else 0
+                sales = self._parse_sales(p)
                 
-                try: orig_price = float(p.get('target_original_price', 0))
-                except: orig_price = 0
-                
-                discount = 0
-                if orig_price > price and price > 0:
-                    discount = int(round((1 - (price / orig_price)) * 100))
+                # תמונות ולינקים
+                img = p.get('product_main_image_url')
+                url = p.get('product_detail_url', '')
 
-                rate_str = str(p.get('evaluate_rate', '0')).replace('%', '')
-                rating = float(rate_str) / 20 if rate_str else 0.0
-
-                prod_obj = {
-                    "title": title_he[:85],
-                    "title_en": title_en, 
-                    "price": price,
-                    "orig_price": orig_price,
-                    "discount": discount,
-                    "image": p.get('product_main_image_url'),
-                    "raw_url": p.get('product_detail_url', ''),
-                    "rating": round(rating, 1) if rating > 0 else 4.8,
-                    "sales": sales
-                }
-                parsed_products.append(prod_obj)
+                parsed_products.append({
+                    "title": title_he[:85], "title_en": title_en,
+                    "price": price, "orig_price": orig_price, "discount": discount,
+                    "image": img, "raw_url": url, "sales": sales, "rating": 4.8
+                })
             except: continue
 
-        # שליחה לגוגל לסינון (לוקחים 20 מוצרים לבדיקה)
-        clean_products = self._filter_with_ai(parsed_products[:20], search_term_en)
+        # --- שלב הסינון החכם ---
         
-        # מיון סופי לפי מכירות
-        clean_products.sort(key=lambda x: x['sales'], reverse=True)
-        return clean_products[:4]
+        # 1. ניסיון AI (על 15 המוצרים הראשונים)
+        candidates = parsed_products[:15]
+        ai_results = self._filter_with_ai(candidates, search_term_en)
+        
+        final_list = []
+        filter_source = "AI"
+
+        if ai_results is not None:
+            # ה-AI עבד! (גם אם החזיר רשימה ריקה, זה אומר שהוא סינן הכל)
+            final_list = ai_results
+        else:
+            # ה-AI נכשל (קרס), עוברים לתוכנית ב'
+            filter_source = "Statistical Backup"
+            final_list = self._fallback_statistical_filter(parsed_products)
+
+        # מיון סופי והחזרה
+        final_list.sort(key=lambda x: x['sales'], reverse=True)
+        return final_list[:4], filter_source
 
     def search_text(self, original_query):
         search_term_en = self._enhance_query(original_query)
-        print(f"🔎 מחפש: {search_term_en}")
-        
         params = {
             'app_key': APP_KEY, 'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
             'sign_method': 'md5', 'method': 'aliexpress.affiliate.product.query',
             'partner_id': 'top-autopilot', 'format': 'json', 'v': '2.0',
             'keywords': search_term_en, 'target_currency': 'ILS', 'ship_to_country': 'IL',
-            'sort': 'LAST_VOLUME_DESC', 'page_size': '20', 
+            'sort': 'LAST_VOLUME_DESC', 'page_size': '30', 
         }
         params['sign'] = generate_sign(params)
         try:
             resp = requests.post("https://api-sg.aliexpress.com/sync", data=params, timeout=15).json()
             return self._process_results(resp, search_term_en, original_query)
-        except Exception as e:
-            print(f"Error: {e}")
-            return []
+        except: return [], "Error"
 
-    def search_image(self, image_bytes):
-        return []
+    def search_image(self, image_bytes): return [], "Image"
 
 engine = FreeSmartEngine()
 
-# --- פונקציות עזר ---
+# --- עזרים ---
 def generate_sign(params):
     s = APP_SECRET + ''.join([f"{k}{v}" for k, v in sorted(params.items())]) + APP_SECRET
     return hashlib.md5(s.encode('utf-8')).hexdigest().upper()
@@ -225,139 +215,42 @@ def create_collage(image_urls):
             img = Image.open(io.BytesIO(r.content)).convert('RGB').resize((500,500))
             images.append(img)
         except: images.append(Image.new('RGB', (500,500), color='#FFFFFF'))
-    
     while len(images) < 4: images.append(Image.new('RGB', (500,500), color='#FFFFFF'))
-    
     collage = Image.new('RGB', (1000, 1000), 'white')
-    positions, draw = [(0,0), (500,0), (0,500), (500,500)], ImageDraw.Draw(collage)
-    
-    def draw_num(d, cx, cy, num):
-        d.ellipse((cx, cy, cx+35, cy+35), fill="#FFD700", outline="black", width=2)
-        bx, by = cx + 13, cy + 7
-        if num == 1: d.rectangle([bx+2, by, bx+6, by+22], fill="black")
-        elif num == 2:
-            for r in [[0,0,10,3],[8,0,10,12],[0,10,10,13],[0,12,3,25],[0,22,10,25]]: d.rectangle([bx+r[0], by+r[1], bx+r[2], by+r[3]], fill="black")
-        elif num == 3:
-            for r in [[0,0,10,3],[8,0,10,25],[0,10,10,13],[0,22,10,25]]: d.rectangle([bx+r[0], by+r[1], bx+r[2], by+r[3]], fill="black")
-        elif num == 4:
-            for r in [[0,0,3,12],[0,10,15,13],[8,0,10,20]]: d.rectangle([bx+r[0], by+r[1], bx+r[2], by+r[3]], fill="black")
-
-    for i, img in enumerate(images[:4]):
-        collage.paste(img, positions[i])
-        if i < len(image_urls):
-            draw_num(draw, positions[i][0]+15, positions[i][1]+15, i+1)
-            
+    positions = [(0,0), (500,0), (0,500), (500,500)]
+    for i, img in enumerate(images[:4]): collage.paste(img, positions[i])
     output = io.BytesIO()
     collage.save(output, format='JPEG', quality=95)
     output.seek(0)
     return output
 
-def notify_admin(user, query_type, content):
-    if not ADMIN_ID or ADMIN_ID == 0: return
-    try:
-        user_name = user.first_name
-        username = f"(@{user.username})" if user.username else ""
-        user_id = user.id
-        msg = (
-            f"🕵️‍♂️ <b>פעילות חדשה!</b>\n"
-            f"👤 <b>משתמש:</b> {user_name} {username}\n"
-            f"🆔 <b>מזהה:</b> {user_id}\n"
-            f"🔍 <b>סוג:</b> {query_type}\n"
-            f"📝 <b>תוכן:</b> {content}"
-        )
-        bot.send_message(ADMIN_ID, msg, parse_mode="HTML")
-    except Exception as e:
-        print(f"Error notifying admin: {e}")
+# --- הנדלרים ---
+@bot.message_handler(commands=['start'])
+def start(m):
+    bot.reply_to(m, "👋 היי! כתוב לי מה לחפש (למשל: 'רחפן' או 'שעון').")
 
-# ==========================================
-# הנדלרים (תגובות הבוט)
-# ==========================================
-@bot.message_handler(commands=['start', 'help'])
-def send_welcome(message):
-    notify_admin(message.from_user, "Start", "נכנס לבוט")
+@bot.message_handler(func=lambda m: True)
+def handle(m):
+    q = m.text.replace("חפש לי", "").strip()
+    if len(q) < 2: return
     
-    welcome_text = (
-        "👋 <b>ברוכים הבאים ל-DrDeals!</b>\n"
-        "הבוט החכם שמשתמש בבינה מלאכותית 🤖 כדי למצוא לכם רק את הדילים השווים באמת.\n\n"
-        "🚀 <b>איך משתמשים?</b>\n"
-        "פשוט כתבו לי מה אתם מחפשים!\n"
-        "לדוגמה:\n"
-        "• <i>חפש לי אוזניות אלחוטיות</i>\n"
-        "• <i>חפש לי רחפן עם מצלמה</i>\n"
-        "• <i>חפש לי מכנסי אלגנט</i>\n\n"
-        "👇 <b>קדימה, נסו אותי! כתבו לי משהו...</b>"
-    )
+    loading = bot.reply_to(m, f"🔎 מחפש '{q}'...")
+    products, source = engine.search_text(q)
+    bot.delete_message(m.chat.id, loading.message_id)
 
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    btn1 = types.KeyboardButton("חפש לי שעון חכם")
-    btn2 = types.KeyboardButton("חפש לי אוזניות")
-    btn3 = types.KeyboardButton("חפש לי רחפן")
-    btn4 = types.KeyboardButton("חפש לי מצלמת רכב")
-    markup.add(btn1, btn2, btn3, btn4)
+    if not products:
+        bot.send_message(m.chat.id, "❌ לא מצאתי תוצאות טובות.")
+        return
 
-    if os.path.exists('welcome.jpg'):
-        try:
-            with open('welcome.jpg', 'rb') as photo:
-                bot.send_photo(message.chat.id, photo, caption=welcome_text, parse_mode="HTML", reply_markup=markup)
-        except:
-            bot.send_message(message.chat.id, welcome_text, parse_mode="HTML", reply_markup=markup)
-    else:
-        bot.send_message(message.chat.id, welcome_text, parse_mode="HTML", reply_markup=markup)
+    # יצירת קולאז' והודעה
+    collage = create_collage([p['image'] for p in products])
+    bot.send_photo(m.chat.id, collage, caption=f"תוצאות עבור: {q}\n(סינון: {source})")
+    
+    msg = ""
+    for i, p in enumerate(products):
+        link = get_short_link(p['raw_url'])
+        msg += f"{i+1}. {p['title']}\n💰 {p['price']}₪ | 🔗 {link}\n\n"
+    
+    bot.send_message(m.chat.id, msg, disable_web_page_preview=True)
 
-@bot.message_handler(content_types=['photo'])
-def handle_photo(message):
-    bot.reply_to(message, "⚠️ חיפוש לפי תמונה יחזור בקרוב.")
-
-@bot.message_handler(func=lambda message: True)
-def handle_text(message):
-    try:
-        query = message.text.strip()
-        notify_admin(message.from_user, "Text Search", query)
-
-        if not query.lower().startswith("חפש לי"):
-             # אם המשתמש סתם כותב טקסט, נזרום איתו
-             if len(query) > 2:
-                 search_query = query
-             else:
-                 return
-        else:
-            search_query = query[7:].strip()
-        
-        loading = bot.send_message(message.chat.id, f"🤖 <b>ה-AI סורק ומסנן תוצאות עבור: {search_query}...</b>", parse_mode="HTML")
-        products = engine.search_text(search_query)
-        
-        bot.delete_message(message.chat.id, loading.message_id)
-        
-        if not products:
-            bot.send_message(message.chat.id, "❌ לא מצאתי תוצאות מדויקות מספיק (ה-AI סינן הכל). נסה ניסוח אחר.")
-            return
-
-        links = []
-        for p in products: links.append(get_short_link(p['raw_url']))
-        collage = create_collage([p['image'] for p in products])
-        
-        bot.send_photo(message.chat.id, collage, caption=f"🎯 <b>תוצאות עבור: {search_query}</b>", parse_mode="HTML")
-
-        text_msg = "💎 <b>נבחרת הדילים (מסונן ע''י AI)</b>\n" + "—" * 12 + "\n\n"
-        markup = types.InlineKeyboardMarkup(row_width=2)
-        buttons = []
-        
-        for i, p in enumerate(products):
-            short_url = links[i]
-            text_msg += f"{i+1}. 🏆 <b>{html.escape(p['title'])}</b>\n"
-            text_msg += f"💰 מחיר: <b>{p['price']}₪</b> | ⭐ {p['rating']}\n"
-            if p['discount'] > 0:
-                 text_msg += f"📉 <b>{p['discount']}% הנחה!</b>\n"
-            
-            text_msg += f"🔗 {short_url}\n\n"
-            buttons.append(types.InlineKeyboardButton(text=f"🎁 לקנייה {i+1}", url=short_url))
-
-        text_msg += "🛍️ <b>קנייה מהנה! | DrDeals</b>"
-        markup.add(*buttons)
-        bot.send_message(message.chat.id, text_msg, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
-            
-    except Exception as e:
-        print(f"Error text: {e}")
-
-bot.remove_webhook()
-bot.infinity_polling(timeout=60)
+bot.infinity_polling()
