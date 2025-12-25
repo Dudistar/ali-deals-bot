@@ -5,7 +5,7 @@ import hashlib
 import time
 import html
 import json
-import re # הוספנו לטובת ניקוי כותרות
+import re # חובה! מנוע חילוץ המספרים
 from telebot import types
 from PIL import Image, ImageDraw
 
@@ -30,7 +30,7 @@ bot = telebot.TeleBot(BOT_TOKEN)
 print("✅ הבוט מחובר ומוכן לעבודה!")
 
 # ==============================================================================
-#  המנוע החכם - גרסה מתוקנת (חילוץ מכירות מתקדם)
+#  המנוע החכם - גרסת ה-Regex (חילוץ מכירות כירורגי)
 # ==============================================================================
 
 class FreeSmartEngine:
@@ -63,34 +63,40 @@ class FreeSmartEngine:
             return user_query
 
     def _parse_sales(self, p):
-        """פונקציה אגרסיבית לחילוץ מספר מכירות"""
-        # רשימת כל השדות האפשריים שבהם אליאקספרס מחביאים את המכירות
+        """פונקציה כירורגית לחילוץ מספרים מתוך טקסט מבולגן"""
+        # רשימת השדות שאליאקספרס מחביאים בהם מידע
         keys_to_check = ['last_volume', 'sale_volume', 'app_sale_volume', 'orders', 'volume']
         
         for key in keys_to_check:
             val = p.get(key)
             if not val: continue
             
-            # המרה לטקסט וניקוי
-            val_str = str(val).lower().replace(',', '').replace('+', '').replace(' sold', '').replace('orders', '').strip()
-            
+            # המרה לטקסט קטן לניתוח
+            val_str = str(val).lower()
+            if val_str == '0': continue
+
             try:
-                multiplier = 1
+                # 1. שימוש ב-Regex למציאת המספר הראשון בטקסט (למשל מ-"over 5k sold" ייקח את ה-"5")
+                match = re.search(r'(\d+(?:\.\d+)?)', val_str)
+                if not match: continue
+                
+                number = float(match.group(1))
+                
+                # 2. בדיקת מכפילים (K, M)
                 if 'k' in val_str:
-                    multiplier = 1000
-                    val_str = val_str.replace('k', '')
-                elif 'w' in val_str: # סימון סיני ל-10,000 לפעמים בורח ל-API
-                    multiplier = 10000
-                    val_str = val_str.replace('w', '')
+                    number *= 1000
                 elif 'm' in val_str:
-                    multiplier = 1000000
-                    val_str = val_str.replace('m', '')
+                    number *= 1000000
+                elif 'w' in val_str: # סימון סיני ל-10 אלף
+                    number *= 10000
                 
-                # המרה למספר
-                number = float(val_str) * multiplier
+                final_num = int(number)
                 
-                if number > 0:
-                    return int(number)
+                # הדפסת בדיקה לחלון השחור (כדי שנראה שזה עובד)
+                # print(f"DEBUG SALES: Found '{val}' in key '{key}' -> Parsed: {final_num}")
+                
+                if final_num > 0:
+                    return final_num
             except:
                 continue
                 
@@ -257,15 +263,13 @@ def handle_message(message):
         for i, p in enumerate(products):
             short_url = links[i]
             
-            # --- שיפור התצוגה ---
             text_msg += f"{i+1}. 🏆 <b>{html.escape(p['title'])}</b>\n"
             text_msg += f"💰 מחיר: <b>{p['price']}₪</b> | ⭐ דירוג: <b>{p['rating']}</b>\n"
             
-            # הצגת מכירות רק אם יש מספר אמיתי
+            # לוגיקה חכמה לתצוגת מכירות
             if p['sales'] > 0:
                 text_msg += f"🔥 נחטף ע''י: <b>{p['sales']}+ רוכשים</b>\n"
             else:
-                # אם אין מספר - שמים שורה אחרת שלא נראית כמו באג
                 text_msg += f"✨ <b>פריט מבוקש ומומלץ</b>\n"
             
             text_msg += f"🚚 <b>משלוח מהיר / Choice</b>\n"
