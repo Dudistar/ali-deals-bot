@@ -13,11 +13,10 @@ try:
     from deep_translator import GoogleTranslator
 except ImportError:
     print("❌ שגיאה: ספריית deep_translator חסרה!")
-    print("אנא הרץ בטרמינל: pip install deep-translator")
     exit()
 
 # ==========================================
-# הגדרות ופרטים אישיים (שלך)
+# הגדרות ופרטים אישיים
 # ==========================================
 BOT_TOKEN = "8575064945:AAH_2WmHMH25TMFvt4FM6OWwfqFcDAaqCPw"
 APP_KEY = "523460"
@@ -29,7 +28,7 @@ bot = telebot.TeleBot(BOT_TOKEN)
 print("✅ הבוט מחובר ומוכן לעבודה!")
 
 # ==============================================================================
-#  המנוע החכם (הלוגיקה שעובדת)
+#  המנוע החכם - עם תיקון לספירת המכירות
 # ==============================================================================
 
 class FreeSmartEngine:
@@ -60,6 +59,32 @@ class FreeSmartEngine:
             return final_query
         except:
             return user_query
+
+    def _parse_sales(self, p):
+        """פונקציה חכמה לחילוץ מספר מכירות מכל פורמט"""
+        sales = 0
+        # שמות שונים שה-API עשוי להשתמש בהם
+        keys = ['last_volume', 'sale_volume', 'orders', 'volume']
+        
+        for key in keys:
+            val = p.get(key)
+            if val:
+                # ניקוי הטקסט: מורידים פלוסים, פסיקים ומילים
+                clean_val = str(val).lower().replace(',', '').replace('+', '').replace(' sold', '').strip()
+                
+                try:
+                    if 'k' in clean_val: # טיפול ב-10k
+                        sales = int(float(clean_val.replace('k', '')) * 1000)
+                    elif 'm' in clean_val: # טיפול ב-1m (נדיר)
+                        sales = int(float(clean_val.replace('m', '')) * 1000000)
+                    else:
+                        sales = int(clean_val)
+                except:
+                    continue
+                
+                if sales > 0:
+                    return sales
+        return 0
 
     def search(self, original_query):
         print(f"🔎 מחפש: {original_query}")
@@ -92,16 +117,17 @@ class FreeSmartEngine:
             parsed_products = []
             for p in products_raw:
                 try:
-                    sales = int(p.get('last_volume', 0))
+                    # כאן התיקון: שימוש בפונקציה החכמה
+                    sales = self._parse_sales(p)
+                    
                     rate_str = str(p.get('evaluate_rate', '0')).replace('%', '')
                     rating = float(rate_str) / 20 if rate_str else 0.0
                     
-                    # תרגום כותרת לעברית לתצוגה יפה
                     try: title_he = GoogleTranslator(source='auto', target='iw').translate(p['product_title'])
                     except: title_he = p['product_title']
 
                     parsed_products.append({
-                        "title": title_he[:85], # החזרנו את אורך הכותרת המקורי
+                        "title": title_he[:85],
                         "price": p.get('target_sale_price', 'N/A'),
                         "image": p.get('product_main_image_url'),
                         "raw_url": p.get('product_detail_url', ''),
@@ -131,7 +157,7 @@ class FreeSmartEngine:
 engine = FreeSmartEngine()
 
 # ==============================================================================
-#  פונקציות עזר ועיצוב (החזרתי את העיצוב המקורי שלך!)
+#  פונקציות עזר ועיצוב
 # ==============================================================================
 
 def generate_sign(params):
@@ -154,7 +180,6 @@ def get_short_link(raw_url):
     except: pass
     return clean_url
 
-# החזרתי את הפונקציה המקורית שלך לציור מספרים!
 def draw_small_number(draw, cx, cy, num):
     draw.ellipse((cx, cy, cx+35, cy+35), fill="#FFD700", outline="black", width=2)
     bx, by = cx + 13, cy + 7
@@ -178,7 +203,6 @@ def create_collage(image_urls):
             images.append(img)
         except: images.append(Image.new('RGB', (500,500), color='#FFFFFF'))
     
-    # השלמה ל-4 תמונות אם חסר
     while len(images) < 4: images.append(Image.new('RGB', (500,500), color='#FFFFFF'))
     
     collage = Image.new('RGB', (1000, 1000), 'white')
@@ -186,7 +210,6 @@ def create_collage(image_urls):
     
     for i, img in enumerate(images[:4]):
         collage.paste(img, positions[i])
-        # ציור המספר רק אם יש מוצר אמיתי במיקום הזה
         if i < len(image_urls):
             draw_small_number(draw, positions[i][0]+15, positions[i][1]+15, i+1)
             
@@ -194,10 +217,6 @@ def create_collage(image_urls):
     collage.save(output, format='JPEG', quality=95)
     output.seek(0)
     return output
-
-# ==============================================================================
-#  טלגרם הנדלר - עם הטקסט והעיצוב המקוריים
-# ==============================================================================
 
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
@@ -220,10 +239,8 @@ def handle_message(message):
         collage = create_collage([p['image'] for p in products])
         bot.delete_message(message.chat.id, loading.message_id)
         
-        # כותרת ההודעה
         bot.send_photo(message.chat.id, collage, caption=f"🎯 <b>הדילים הכי טובים ל-{search_query}:</b>", parse_mode="HTML")
 
-        # תוכן ההודעה המושקע (כמו בקוד המקורי שלך)
         text_msg = "💎 <b>נבחרת הדילים של DrDeals</b>\n" + "—" * 12 + "\n\n"
         markup = types.InlineKeyboardMarkup(row_width=2)
         buttons = []
@@ -231,14 +248,15 @@ def handle_message(message):
         for i, p in enumerate(products):
             short_url = links[i]
             
-            # עיצוב טקסט עשיר
+            # בדיקה אם יש מכירות להצגה
+            sales_text = f"{p['sales']}+ אנשים" if p['sales'] > 0 else "חדש / טרנדי 🔥"
+            
             text_msg += f"{i+1}. 🏆 <b>{html.escape(p['title'])}</b>\n"
             text_msg += f"💰 מחיר: <b>{p['price']}₪</b> | ⭐ דירוג: <b>{p['rating']}</b>\n"
-            text_msg += f"🔥 נרכש ע''י <b>{p['sales']}</b> אנשים\n"
+            text_msg += f"🔥 נרכש ע''י: <b>{sales_text}</b>\n"
             text_msg += f"🚚 <b>משלוח מהיר / Choice</b>\n"
             text_msg += f"🔗 {short_url}\n\n"
             
-            # כפתורים מעוצבים
             buttons.append(types.InlineKeyboardButton(text=f"🎁 לקנייה {i+1}", url=short_url))
 
         text_msg += "—" * 12 + "\n🛍️ <b>קנייה מהנה! | DrDeals</b>"
