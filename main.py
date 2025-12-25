@@ -5,6 +5,7 @@ import hashlib
 import time
 import html
 import json
+import re # הוספנו לטובת ניקוי כותרות
 from telebot import types
 from PIL import Image, ImageDraw
 
@@ -13,6 +14,7 @@ try:
     from deep_translator import GoogleTranslator
 except ImportError:
     print("❌ שגיאה: ספריית deep_translator חסרה!")
+    print("אנא הרץ בטרמינל: pip install deep-translator")
     exit()
 
 # ==========================================
@@ -28,7 +30,7 @@ bot = telebot.TeleBot(BOT_TOKEN)
 print("✅ הבוט מחובר ומוכן לעבודה!")
 
 # ==============================================================================
-#  המנוע החכם - עם תיקון לספירת המכירות
+#  המנוע החכם - גרסה מתוקנת (חילוץ מכירות מתקדם)
 # ==============================================================================
 
 class FreeSmartEngine:
@@ -61,29 +63,37 @@ class FreeSmartEngine:
             return user_query
 
     def _parse_sales(self, p):
-        """פונקציה חכמה לחילוץ מספר מכירות מכל פורמט"""
-        sales = 0
-        # שמות שונים שה-API עשוי להשתמש בהם
-        keys = ['last_volume', 'sale_volume', 'orders', 'volume']
+        """פונקציה אגרסיבית לחילוץ מספר מכירות"""
+        # רשימת כל השדות האפשריים שבהם אליאקספרס מחביאים את המכירות
+        keys_to_check = ['last_volume', 'sale_volume', 'app_sale_volume', 'orders', 'volume']
         
-        for key in keys:
+        for key in keys_to_check:
             val = p.get(key)
-            if val:
-                # ניקוי הטקסט: מורידים פלוסים, פסיקים ומילים
-                clean_val = str(val).lower().replace(',', '').replace('+', '').replace(' sold', '').strip()
+            if not val: continue
+            
+            # המרה לטקסט וניקוי
+            val_str = str(val).lower().replace(',', '').replace('+', '').replace(' sold', '').replace('orders', '').strip()
+            
+            try:
+                multiplier = 1
+                if 'k' in val_str:
+                    multiplier = 1000
+                    val_str = val_str.replace('k', '')
+                elif 'w' in val_str: # סימון סיני ל-10,000 לפעמים בורח ל-API
+                    multiplier = 10000
+                    val_str = val_str.replace('w', '')
+                elif 'm' in val_str:
+                    multiplier = 1000000
+                    val_str = val_str.replace('m', '')
                 
-                try:
-                    if 'k' in clean_val: # טיפול ב-10k
-                        sales = int(float(clean_val.replace('k', '')) * 1000)
-                    elif 'm' in clean_val: # טיפול ב-1m (נדיר)
-                        sales = int(float(clean_val.replace('m', '')) * 1000000)
-                    else:
-                        sales = int(clean_val)
-                except:
-                    continue
+                # המרה למספר
+                number = float(val_str) * multiplier
                 
-                if sales > 0:
-                    return sales
+                if number > 0:
+                    return int(number)
+            except:
+                continue
+                
         return 0
 
     def search(self, original_query):
@@ -117,7 +127,6 @@ class FreeSmartEngine:
             parsed_products = []
             for p in products_raw:
                 try:
-                    # כאן התיקון: שימוש בפונקציה החכמה
                     sales = self._parse_sales(p)
                     
                     rate_str = str(p.get('evaluate_rate', '0')).replace('%', '')
@@ -248,12 +257,17 @@ def handle_message(message):
         for i, p in enumerate(products):
             short_url = links[i]
             
-            # בדיקה אם יש מכירות להצגה
-            sales_text = f"{p['sales']}+ אנשים" if p['sales'] > 0 else "חדש / טרנדי 🔥"
-            
+            # --- שיפור התצוגה ---
             text_msg += f"{i+1}. 🏆 <b>{html.escape(p['title'])}</b>\n"
             text_msg += f"💰 מחיר: <b>{p['price']}₪</b> | ⭐ דירוג: <b>{p['rating']}</b>\n"
-            text_msg += f"🔥 נרכש ע''י: <b>{sales_text}</b>\n"
+            
+            # הצגת מכירות רק אם יש מספר אמיתי
+            if p['sales'] > 0:
+                text_msg += f"🔥 נחטף ע''י: <b>{p['sales']}+ רוכשים</b>\n"
+            else:
+                # אם אין מספר - שמים שורה אחרת שלא נראית כמו באג
+                text_msg += f"✨ <b>פריט מבוקש ומומלץ</b>\n"
+            
             text_msg += f"🚚 <b>משלוח מהיר / Choice</b>\n"
             text_msg += f"🔗 {short_url}\n\n"
             
