@@ -162,33 +162,79 @@ def filter_premium(products, query_en):
     return final_quality_list[:4]
 
 # ==========================================
-# הנדלרים
+# הנדלרים (חוויית משתמש משופרת)
 # ==========================================
 
 @bot.message_handler(commands=['start'])
 def start(m):
-    welcome_msg = "👋 <b>ברוכים הבאים ל-DrDeals Premium!</b>\n👇 <b>נסה אותי:</b>"
+    # הודעת פתיחה מושקעת
+    welcome_msg = (
+        "👋 <b>ברוכים הבאים ל-DrDeals Premium!</b> 💎\n\n"
+        "אני לא עוד בוט רגיל. אני משתמש בבינה מלאכותית (AI) 🧠 ובמנגנון סינון איכות "
+        "כדי למצוא לכם את הדילים הכי שווים באליאקספרס - בלי הזבל ובלי החיקויים הזולים.\n\n"
+        "🤖 <b>איך זה עובד?</b>\n"
+        "אתם מבקשים מוצר ⬅️ אני סורק מאות תוצאות ⬅️ מסנן שטויות ⬅️ ומגיש לכם רק את הטופ!\n\n"
+        "👇 <b>תנסו אותי עכשיו:</b>"
+    )
+    
+    # תפריט כפתורים קבוע ונוח
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.add("חפש לי אוזניות", "חפש לי רחפן", "חפש לי שעון חכם")
+    btn1 = types.KeyboardButton("חפש לי רחפן")
+    btn2 = types.KeyboardButton("חפש לי אוזניות")
+    btn3 = types.KeyboardButton("חפש לי שעון חכם")
+    btn4 = types.KeyboardButton("❓ עזרה וטיפים") # כפתור עזרה חדש
+    markup.add(btn1, btn2, btn3, btn4)
+    
     bot.send_message(m.chat.id, welcome_msg, parse_mode="HTML", reply_markup=markup)
+
+@bot.message_handler(commands=['help'])
+def help_command(m):
+    # הודעת עזרה מפורטת
+    help_text = (
+        "❓ <b>מדריך למשתמש - DrDeals</b>\n\n"
+        "כדי לקבל את התוצאות הטובות ביותר, הנה כמה טיפים:\n\n"
+        "1️⃣ <b>היו ספציפיים:</b>\n"
+        "במקום לכתוב סתם 'שעון', נסו: 'שעון חכם שיאומי' או 'שעון ספורט עמיד למים'.\n\n"
+        "2️⃣ <b>סינון חכם:</b>\n"
+        "אני אוטומטית מסנן מוצרים זולים מידי שנראים כמו חלקי חילוף או זיופים. אם אתם מחפשים דווקא חלק קטן, ציינו זאת.\n\n"
+        "3️⃣ <b>סבלנות:</b>\n"
+        "תהליך הסינון (AI) לוקח כמה שניות, אבל זה מבטיח שתקבלו איכות ולא זבל.\n\n"
+        "💡 <b>פקודות נוספות:</b>\n"
+        "/start - חזרה לתפריט הראשי\n\n"
+        "🛍️ <b>קנייה מהנה!</b>"
+    )
+    bot.send_message(m.chat.id, help_text, parse_mode="HTML")
+
+@bot.message_handler(func=lambda m: "עזרה" in m.text or "טיפים" in m.text)
+def handle_help_text(m):
+    help_command(m)
 
 @bot.message_handler(func=lambda m: True)
 def handle_text(m):
-    if "חפש לי" not in m.text: return
+    if "חפש לי" not in m.text: 
+        # אם המשתמש סתם כותב טקסט בלי "חפש לי", נזכיר לו איך משתמשים
+        if len(m.text) > 3:
+             bot.reply_to(m, "💡 כדי לחפש, אנא התחל את המשפט ב-**'חפש לי'** (למשל: 'חפש לי רמקול בלוטוס').")
+        return
+
     user_query = m.text.replace("חפש לי", "").strip()
     
     bot.send_chat_action(m.chat.id, 'typing')
-    loading = bot.send_message(m.chat.id, f"💎 <b>מחפש את הטופ עבור: {user_query}...</b>", parse_mode="HTML")
+    loading = bot.send_message(m.chat.id, f"💎 <b>ה-AI סורק ומסנן עבור: {user_query}...</b>", parse_mode="HTML")
     
     raw_products, query_en = get_ali_products(user_query)
     
     if not raw_products:
         bot.delete_message(m.chat.id, loading.message_id)
-        bot.send_message(m.chat.id, "❌ לא נמצאו מוצרים.")
+        bot.send_message(m.chat.id, "❌ לא נמצאו מוצרים תואמים.")
         return
 
     final_list = filter_premium(raw_products, query_en)
     bot.delete_message(m.chat.id, loading.message_id)
+
+    if not final_list:
+         bot.send_message(m.chat.id, "🔍 לא מצאתי תוצאות איכותיות מספיק (סיננתי מוצרים זולים/לא רלוונטיים). נסה לנסח אחרת.")
+         return
 
     try:
         image_urls = [p.get('product_main_image_url') for p in final_list]
@@ -211,7 +257,7 @@ def handle_text(m):
             sales = p.get('lastest_volume', 0)
             link = get_short_link(p.get('product_detail_url'))
             
-            # --- התיקון כאן: הקישור גלוי לגמרי ---
+            # לינק גלוי
             full_text += f"{i+1}. 🏅 <b>{title_he[:55]}...</b>\n"
             full_text += f"💰 מחיר: <b>{price}₪</b>{discount_txt}\n"
             full_text += f"⭐ דירוג איכות: <b>{p.get('evaluate_rate', '4.8')}</b>\n"
