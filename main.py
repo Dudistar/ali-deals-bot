@@ -57,6 +57,7 @@ def generate_sign(params):
     return hashlib.md5(s.encode('utf-8')).hexdigest().upper()
 
 def get_short_link(raw_url):
+    if not raw_url: return None
     clean_url = raw_url.split('?')[0]
     try:
         params = {
@@ -157,28 +158,34 @@ def filter_with_snob_ai(products, query_en):
     
     list_text = "\n".join([f"ID {i}: {p['product_title']} (Price: {p.get('target_sale_price', '0')})" for i, p in enumerate(candidates[:15])])
     
+    # --- שדרוג הפרומפט: בדיקת רלוונטיות קשוחה ---
     prompt = f"""
     You are a Shopping Assistant for a wealthy client.
     User Query: "{query_en}"
-    Task: Pick the BEST quality items.
+    
+    Task: Pick the BEST quality items that MATCH the query.
+    
     STRICT RULES:
-    1. REJECT cheap toys or knockoffs. 
-    2. REJECT accessories.
-    3. Look at the Price: If it looks too cheap, REJECT IT.
+    1. RELEVANCE CHECK: If the items are NOT related to "{query_en}", REJECT ALL. 
+       (Example: If query is 'drone' and items are 'shoes' -> Return nothing).
+    2. REJECT cheap toys or knockoffs. 
+    3. REJECT accessories.
+    4. Look at the Price: If it looks too cheap, REJECT IT.
+    
     List:
     {list_text}
-    Output: Only the IDs of the high-quality items (e.g., 0, 2).
+    
+    Output: Only the IDs of the high-quality items (e.g., 0, 2). If nothing matches, return empty.
     """
     try:
         response = model.generate_content(prompt)
         ids = [int(s) for s in re.findall(r'\b\d+\b', response.text)]
         ai_filtered = [candidates[i] for i in ids if i < len(candidates)]
         
-        if not ai_filtered:
-            return candidates[:4]
-            
-        return ai_filtered[:4]
+        # אם ה-AI סינן הכל, זה אומר שאין התאמה. מחזירים רשימה ריקה.
+        return ai_filtered
     except: 
+        # במקרה שגיאה ב-AI, נחזיר את מה שסונן ידנית (גיליוטינה)
         return candidates[:4]
 
 # ==========================================
@@ -213,7 +220,6 @@ def start(m):
 
 @bot.message_handler(commands=['help'])
 def help_command(m):
-    # החזרתי את ההנחיה המפורשת כאן
     help_text = (
         "💎 <b>מדריך לחיפוש איכותי</b>\n\n"
         "כדי שאוכל למצוא עבורכם את הטוב ביותר, אנא הקפידו על הפורמט הבא:\n\n"
@@ -245,14 +251,23 @@ def handle_text(m):
     
     if not raw_products:
         bot.delete_message(m.chat.id, loading.message_id)
-        bot.send_message(m.chat.id, "❌ לא נמצאו מוצרים התואמים את סטנדרט האיכות שלנו.")
+        bot.send_message(m.chat.id, "❌ לא מצאתי מוצרים. נסו לבדוק את האיות או לחפש באנגלית.")
         return
 
     final_list = filter_with_snob_ai(raw_products, query_en)
     bot.delete_message(m.chat.id, loading.message_id)
 
+    # --- התיקון כאן: הודעה יפה אם לא נמצאו תוצאות רלוונטיות ---
     if not final_list:
-         bot.send_message(m.chat.id, "🔍 החיפוש הסתיים, אך לא נמצאו מוצרים שעומדים ברף האיכות הנדרש.")
+         msg = (
+             "🤔 <b>לא מצאתי תוצאות מתאימות.</b>\n"
+             "יכול להיות שהמוצרים לא היו איכותיים מספיק, או שלא הבנתי את מילות החיפוש.\n\n"
+             "💡 <b>האם התכוונתם ל...</b>\n"
+             "• נסו לכתוב בצורה ברורה יותר (למשל 'רחפן' במקום 'מטוס קטן')\n"
+             "• נסו לחפש באנגלית\n"
+             "• נסו מותג ספציפי"
+         )
+         bot.send_message(m.chat.id, msg, parse_mode="HTML")
          return
 
     try:
@@ -275,6 +290,10 @@ def handle_text(m):
             
             link = get_short_link(p.get('product_detail_url'))
             
+            # --- תיקון הקריסה: אם אין לינק, לא יוצרים כפתור ---
+            if not link:
+                continue
+
             full_text += f"{i+1}. 🏅 <b>{title_he[:55]}...</b>\n"
             full_text += f"💰 מחיר: <b>{price}₪</b>{discount_txt}\n"
             full_text += f"🔗 {link}\n\n"
