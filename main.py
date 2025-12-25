@@ -16,15 +16,15 @@ except ImportError:
     pass
 
 # ==========================================
-# הגדרות מערכת
+# הגדרות
 # ==========================================
 BOT_TOKEN = "8575064945:AAH_2WmHMH25TMFvt4FM6OWwfqFcDAaqCPw"
 APP_KEY = "523460"
 APP_SECRET = "Co7bNfYfqlu8KTdj2asXQV78oziICQEs"
 TRACKING_ID = "DrDeals"
-ADMIN_ID = 173837076
+ADMIN_ID = 173837076  # <--- לכאן יישלח הדיווח
 
-# משיכת המפתח מהכספת
+# משיכת מפתח
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 if GEMINI_API_KEY:
@@ -38,6 +38,22 @@ bot = telebot.TeleBot(BOT_TOKEN)
 # ==========================================
 # פונקציות ליבה
 # ==========================================
+
+def notify_admin(user, query):
+    """
+    המלשינון: שולח הודעה למנהל על כל חיפוש
+    """
+    if not ADMIN_ID: return
+    try:
+        username = f"@{user.username}" if user.username else "ללא שם משתמש"
+        msg = (
+            f"🕵️‍♂️ **התראה למנהל:**\n"
+            f"👤 **משתמש:** {user.first_name} ({username})\n"
+            f"🔍 **חיפש:** {query}"
+        )
+        bot.send_message(ADMIN_ID, msg, parse_mode="Markdown")
+    except Exception as e:
+        print(f"Error notifying admin: {e}")
 
 def generate_sign(params):
     s = APP_SECRET + ''.join([f"{k}{v}" for k, v in sorted(params.items())]) + APP_SECRET
@@ -112,170 +128,82 @@ def get_ali_products(query):
         return data, query_en
     except: return [], query_en
 
-def remove_cheap_knockoffs(products):
-    if not products or len(products) < 3: return products
-    prices = []
-    for p in products:
-        try:
-            price = float(p.get('target_sale_price', 0))
-            if price > 0: prices.append(price)
-        except: pass
-    if not prices: return products
+def the_guillotine_filter(products):
+    """
+    שיטת הגיליוטינה: חותך את החצי התחתון של המחירים ומעיף מילים אסורות
+    """
+    if not products or len(products) < 5: return products
     
-    median_price = statistics.median(prices)
-    quality_threshold = median_price * 0.6 
+    blacklist = ["strobe", "light", "lamp", "propeller", "battery", "part", "accessory", "cable", "case", "cover", "gift", "toy", "mini"]
+    clean_products = []
     
-    high_quality_products = []
     for p in products:
-        try:
-            price = float(p.get('target_sale_price', 0))
-            if price >= quality_threshold:
-                high_quality_products.append(p)
-        except: pass
-    return high_quality_products
+        title = p.get('product_title', '').lower()
+        if any(bad in title for bad in blacklist):
+            continue
+        clean_products.append(p)
+    
+    if len(clean_products) < 2: 
+        clean_products = products
+    
+    # מיון מהיקר לזול
+    clean_products.sort(key=lambda x: float(x.get('target_sale_price', 0)), reverse=True)
+    
+    # לוקחים את החצי היקר יותר
+    half_index = len(clean_products) // 2
+    premium_half = clean_products[:half_index]
+    
+    if not premium_half:
+        return clean_products[:4]
+        
+    return premium_half
 
-def filter_premium(products, query_en):
+def filter_with_snob_ai(products, query_en):
     if not products: return []
     if not GEMINI_API_KEY: return products[:4]
 
-    list_text = "\n".join([f"ID {i}: {p['product_title']} (Price: {p.get('target_sale_price', '0')})" for i, p in enumerate(products[:20])])
+    candidates = the_guillotine_filter(products)
+    
+    list_text = "\n".join([f"ID {i}: {p['product_title']} (Price: {p.get('target_sale_price', '0')})" for i, p in enumerate(candidates[:15])])
+    
     prompt = f"""
-    Query: "{query_en}"
-    Select IDs of HIGH QUALITY main products only.
-    Ignore cheap plastic toys, spare parts, and accessories.
+    You are a Shopping Assistant for a wealthy client.
+    User Query: "{query_en}"
+    Task: Pick the BEST quality items.
+    STRICT RULES:
+    1. REJECT cheap toys or knockoffs. 
+    2. REJECT accessories.
+    3. Look at the Price: If it looks too cheap, REJECT IT.
     List:
     {list_text}
-    Output IDs:
+    Output: Only the IDs of the high-quality items (e.g., 0, 2).
     """
     try:
         response = model.generate_content(prompt)
         ids = [int(s) for s in re.findall(r'\b\d+\b', response.text)]
-        ai_filtered = [products[i] for i in ids if i < len(products)]
-    except: ai_filtered = products
-
-    if not ai_filtered: return products[:4]
-
-    final_quality_list = remove_cheap_knockoffs(ai_filtered)
-    if not final_quality_list: return ai_filtered
-
-    final_quality_list.sort(key=lambda x: float(x.get('target_sale_price', 0)), reverse=True)
-    return final_quality_list[:4]
+        ai_filtered = [candidates[i] for i in ids if i < len(candidates)]
+        
+        if not ai_filtered:
+            return candidates[:4]
+            
+        return ai_filtered[:4]
+    except: 
+        return candidates[:4]
 
 # ==========================================
-# הנדלרים (חוויית משתמש משופרת)
+# הנדלרים
 # ==========================================
 
 @bot.message_handler(commands=['start'])
 def start(m):
-    # הודעת פתיחה מושקעת
+    # הפעלת המלשינון גם בהתחלה (אופציונלי, כדי לדעת מי נכנס)
+    notify_admin(m.from_user, "לחץ START")
+    
     welcome_msg = (
         "👋 <b>ברוכים הבאים ל-DrDeals Premium!</b> 💎\n\n"
-        "אני לא עוד בוט רגיל. אני משתמש בבינה מלאכותית (AI) 🧠 ובמנגנון סינון איכות "
-        "כדי למצוא לכם את הדילים הכי שווים באליאקספרס - בלי הזבל ובלי החיקויים הזולים.\n\n"
-        "🤖 <b>איך זה עובד?</b>\n"
-        "אתם מבקשים מוצר ⬅️ אני סורק מאות תוצאות ⬅️ מסנן שטויות ⬅️ ומגיש לכם רק את הטופ!\n\n"
-        "👇 <b>תנסו אותי עכשיו:</b>"
+        "הבוט שעושה סדר באליאקספרס.\n"
+        "אני משתמש באלגוריתם 'גיליוטינה' 🪓 כדי לחתוך את כל הזיופים והצעצועים הזולים,\n"
+        "ומשאיר לכם רק ציוד איכותי.\n\n"
+        "👇 <b>נסה אותי עכשיו:</b>"
     )
-    
-    # תפריט כפתורים קבוע
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    btn1 = types.KeyboardButton("חפש לי רחפן")
-    btn2 = types.KeyboardButton("חפש לי אוזניות")
-    btn3 = types.KeyboardButton("חפש לי שעון חכם")
-    btn4 = types.KeyboardButton("❓ עזרה וטיפים")
-    markup.add(btn1, btn2, btn3, btn4)
-    
-    # בדיקה אם קיימת תמונה ושליחתה
-    if os.path.exists('welcome.jpg'):
-        try:
-            with open('welcome.jpg', 'rb') as photo:
-                bot.send_photo(m.chat.id, photo, caption=welcome_msg, parse_mode="HTML", reply_markup=markup)
-        except:
-            bot.send_message(m.chat.id, welcome_msg, parse_mode="HTML", reply_markup=markup)
-    else:
-        bot.send_message(m.chat.id, welcome_msg, parse_mode="HTML", reply_markup=markup)
-
-@bot.message_handler(commands=['help'])
-def help_command(m):
-    # הודעת עזרה מפורטת
-    help_text = (
-        "❓ <b>מדריך למשתמש - DrDeals</b>\n\n"
-        "כדי לקבל את התוצאות הטובות ביותר, הנה כמה טיפים:\n\n"
-        "1️⃣ <b>היו ספציפיים:</b>\n"
-        "במקום לכתוב סתם 'שעון', נסו: 'שעון חכם שיאומי' או 'שעון ספורט עמיד למים'.\n\n"
-        "2️⃣ <b>סינון חכם:</b>\n"
-        "אני אוטומטית מסנן מוצרים זולים מידי שנראים כמו חלקי חילוף או זיופים. אם אתם מחפשים דווקא חלק קטן, ציינו זאת.\n\n"
-        "3️⃣ <b>סבלנות:</b>\n"
-        "תהליך הסינון (AI) לוקח כמה שניות, אבל זה מבטיח שתקבלו איכות ולא זבל.\n\n"
-        "💡 <b>פקודות נוספות:</b>\n"
-        "/start - חזרה לתפריט הראשי\n\n"
-        "🛍️ <b>קנייה מהנה!</b>"
-    )
-    bot.send_message(m.chat.id, help_text, parse_mode="HTML")
-
-@bot.message_handler(func=lambda m: "עזרה" in m.text or "טיפים" in m.text)
-def handle_help_text(m):
-    help_command(m)
-
-@bot.message_handler(func=lambda m: True)
-def handle_text(m):
-    if "חפש לי" not in m.text: 
-        if len(m.text) > 3:
-             bot.reply_to(m, "💡 כדי לחפש, אנא התחל את המשפט ב-**'חפש לי'** (למשל: 'חפש לי רמקול בלוטוס').")
-        return
-
-    user_query = m.text.replace("חפש לי", "").strip()
-    
-    bot.send_chat_action(m.chat.id, 'typing')
-    loading = bot.send_message(m.chat.id, f"💎 <b>ה-AI סורק ומסנן עבור: {user_query}...</b>", parse_mode="HTML")
-    
-    raw_products, query_en = get_ali_products(user_query)
-    
-    if not raw_products:
-        bot.delete_message(m.chat.id, loading.message_id)
-        bot.send_message(m.chat.id, "❌ לא נמצאו מוצרים תואמים.")
-        return
-
-    final_list = filter_premium(raw_products, query_en)
-    bot.delete_message(m.chat.id, loading.message_id)
-
-    if not final_list:
-         bot.send_message(m.chat.id, "🔍 לא מצאתי תוצאות איכותיות מספיק (סיננתי מוצרים זולים/לא רלוונטיים). נסה לנסח אחרת.")
-         return
-
-    try:
-        image_urls = [p.get('product_main_image_url') for p in final_list]
-        collage = create_collage(image_urls)
-        bot.send_photo(m.chat.id, collage, caption=f"🏆 <b>הבחירות המובילות: {user_query}</b>", parse_mode="HTML")
-        
-        full_text = ""
-        markup = types.InlineKeyboardMarkup(row_width=1)
-        
-        for i, p in enumerate(final_list):
-            title_he = translate_to_hebrew(p.get('product_title'))
-            price = float(p.get('target_sale_price', 0))
-            orig_price = float(p.get('target_original_price', 0))
-            
-            discount_txt = ""
-            if orig_price > price:
-                percent = int(((orig_price - price) / orig_price) * 100)
-                discount_txt = f" | 📉 <b>{percent}% הנחה</b>"
-            
-            sales = p.get('lastest_volume', 0)
-            link = get_short_link(p.get('product_detail_url'))
-            
-            full_text += f"{i+1}. 🏅 <b>{title_he[:55]}...</b>\n"
-            full_text += f"💰 מחיר: <b>{price}₪</b>{discount_txt}\n"
-            full_text += f"⭐ דירוג איכות: <b>{p.get('evaluate_rate', '4.8')}</b>\n"
-            full_text += f"🔗 {link}\n\n"
-            
-            btn = types.InlineKeyboardButton(text=f"🛍️ לרכישת מוצר {i+1}", url=link)
-            markup.add(btn)
-            
-        full_text += "💎 <b>DrDeals Premium Selection</b>"
-        bot.send_message(m.chat.id, full_text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
-        
-    except Exception as e:
-        bot.send_message(m.chat.id, f"שגיאה: {e}")
-
-bot.infinity_polling()
+    markup = types.ReplyKeyboardMarkup(resize_
