@@ -13,8 +13,6 @@ from PIL import Image, ImageDraw
 try:
     from deep_translator import GoogleTranslator
 except ImportError:
-    print("❌ שגיאה: ספריית deep_translator חסרה!")
-    # בריילוואי זה לא יעצור את הריצה אם זה ב-requirements.txt
     pass
 
 # ==========================================
@@ -27,71 +25,87 @@ TRACKING_ID = "DrDeals"
 
 print("🔄 מתחבר לטלגרם...")
 bot = telebot.TeleBot(BOT_TOKEN)
-print("✅ הבוט מחובר ומוכן לעבודה!")
+print("✅ הבוט מחובר - גרסת Smart Quality 2.0")
 
 class FreeSmartEngine:
     def __init__(self):
+        # מילים שמחזקות חיפוש כדי להביא מותגים ולא זבל גנרי
         self.keyword_booster = {
-            "charger": "GaN fast charging",
-            "cable": "braided fast data",
-            "headphones": "noise cancelling bluetooth 5.3",
-            "watch": "amoled smart watch waterproof",
-            "dash": "70mai ddpai 4k",
+            "charger": "Anker Baseus Ugreen GaN 100W", # מותגים חזקים
+            "cable": "Baseus Ugreen braided 100W",
+            "headphones": "Anker Soundcore Sony QCY Earbuds",
+            "watch": "Amazfit Xiaomi Huawei Ticwatch Global Version", # דגש על גלובלי
+            "phone": "Xiaomi POCO OnePlus RealMe Global",
+            "dash": "70mai DDPAI 4k GPS",
+            "cleaner": "Roborock Dreame Spare Parts",
         }
 
     def _enhance_query(self, user_query):
+        """משדרג את השאילתה עם מותגים מובילים"""
         try:
             en_query = GoogleTranslator(source='auto', target='en').translate(user_query).lower()
             for key, boost in self.keyword_booster.items():
-                if key in en_query and boost not in en_query:
-                    return f"{en_query} {boost}"
+                if key in en_query:
+                    # מחליף את המילה הגנרית במילה מחוזקת במותגים
+                    return f"{boost} {en_query}"
             return en_query
         except:
             return user_query
 
     def _parse_sales(self, p):
-        """פונקציה חכמה שסורקת את כל השדות בחיפוש אחר מכירות"""
-        best_sales = 0
-        
-        # עוברים על כל המפתחות והערכים במוצר
-        for key, val in p.items():
-            k_str = str(key).lower()
-            
-            # אם המפתח מכיל מילים כמו volume/sold/orders אבל לא price (כדי לא לקחת מחיר)
-            if any(x in k_str for x in ['volume', 'sold', 'sales', 'order']) and 'price' not in k_str:
-                
-                # ניסיון חילוץ מספר מהערך
-                current_sales = self._extract_number(val)
-                
-                # אנחנו רוצים את המספר הגדול ביותר שנמצא (למשל, כדי לא לקחת בטעות '0' משדה משני)
-                if current_sales > best_sales:
-                    best_sales = current_sales
-                    
-        return best_sales
-
-    def _extract_number(self, val):
-        """חילוץ מספר נקי מטקסט כולל k/m"""
-        try:
+        """חילוץ מכירות אגרסיבי (מהתיקון הקודם)"""
+        keys_to_check = ['last_volume', 'sale_volume', 'app_sale_volume', 'orders', 'volume', 'sales']
+        for key in keys_to_check:
+            val = p.get(key)
+            if not val: continue
             val_str = str(val).lower()
-            if not val_str or val_str == '0': return 0
-            
-            # regex למציאת מספר (כולל נקודה עשרונית)
-            match = re.search(r'(\d+(?:\.\d+)?)', val_str)
-            if not match: return 0
-            
-            num = float(match.group(1))
-            
-            # הכפלה לפי סיומות
-            if 'k' in val_str: num *= 1000
-            elif 'm' in val_str: num *= 1000000
-            elif 'w' in val_str: num *= 10000 # סיומת סינית נפוצה
-            
-            return int(num)
-        except:
-            return 0
+            if val_str == '0': continue
+            try:
+                match = re.search(r'(\d+(?:\.\d+)?)', val_str)
+                if not match: continue
+                num = float(match.group(1))
+                if 'k' in val_str: num *= 1000
+                elif 'w' in val_str: num *= 10000
+                elif 'm' in val_str: num *= 1000000
+                if num > 0: return int(num)
+            except: continue
+        return 0
+
+    def _calculate_quality_score(self, product):
+        """
+        המוח החדש: נותן ציון למוצר כדי להחליט אם הוא 'מציאה' או סתם זבל זול
+        """
+        score = 0
+        rating = product['rating']
+        sales = product['sales']
+        price = 0
+        try: price = float(product['price'])
+        except: pass
+
+        # 1. פילטר בסיסי - מוצרים גרועים מקבלים ציון שלילי
+        if rating < 4.5: return -100
+        
+        # 2. ניקוד על דירוג (הכי חשוב)
+        # מוצר עם 4.9 מקבל בונוס אדיר לעומת 4.5
+        score += (rating - 4.5) * 50  # ההבדל בין 4.5 ל-4.9 הוא קריטי
+
+        # 3. ניקוד על מכירות (Logarithmic)
+        # אנחנו רוצים לתעדף מכירות, אבל ש-10,000 לא "ידרוס" מוצר איכותי עם 2,000
+        if sales > 50: score += 10
+        if sales > 500: score += 20
+        if sales > 2000: score += 30
+        if sales > 10000: score += 10
+
+        # 4. ענישת "מוצר חשוד בזולות"
+        # אם המחיר נמוך מ-10 ש"ח אבל הדירוג גבוה - זה כנראה סתם כבל או מדבקה
+        # נוריד לזה ניקוד אלא אם כן זה באמת מה שחיפשו
+        if price < 15: 
+            score -= 15 
+
+        return score
 
     def search(self, original_query):
-        print(f"🔎 מחפש: {original_query}")
+        print(f"🔎 מחפש (איכותי): {original_query}")
         smart_keywords = self._enhance_query(original_query)
         
         params = {
@@ -105,8 +119,8 @@ class FreeSmartEngine:
             'keywords': smart_keywords,
             'target_currency': 'ILS',
             'ship_to_country': 'IL',
-            'sort': 'LAST_VOLUME_DESC',
-            'page_size': '50',
+            'sort': 'LAST_VOLUME_DESC', # עדיין מושכים את הנמכרים ביותר...
+            'page_size': '50', # ...אבל מושכים הרבה כדי לסנן בתוכנה
         }
         params['sign'] = generate_sign(params)
         
@@ -121,36 +135,36 @@ class FreeSmartEngine:
             parsed_products = []
             for p in products_raw:
                 try:
-                    # שימוש בפונקציה החדשה
                     sales = self._parse_sales(p)
                     
                     rate_str = str(p.get('evaluate_rate', '0')).replace('%', '')
                     rating = float(rate_str) / 20 if rate_str else 0.0
+                    
                     try: title_he = GoogleTranslator(source='auto', target='iw').translate(p['product_title'])
                     except: title_he = p['product_title']
 
-                    parsed_products.append({
+                    prod_obj = {
                         "title": title_he[:85],
                         "price": p.get('target_sale_price', 'N/A'),
                         "image": p.get('product_main_image_url'),
                         "raw_url": p.get('product_detail_url', ''),
                         "rating": round(rating, 1),
                         "sales": sales
-                    })
+                    }
+                    
+                    # חישוב ציון האיכות החדש
+                    prod_obj['score'] = self._calculate_quality_score(prod_obj)
+                    
+                    # רק אם הציון חיובי, מוסיפים לרשימה
+                    if prod_obj['score'] > 0:
+                        parsed_products.append(prod_obj)
+                        
                 except: continue
 
-            # מדרג איכות
-            premium = [p for p in parsed_products if p['rating'] >= 4.7 and p['sales'] >= 10]
-            if len(premium) >= 2:
-                premium.sort(key=lambda x: x['sales'], reverse=True)
-                return premium[:4]
+            # מיון לפי הציון החכם שלנו (ולא סתם לפי מכירות)
+            parsed_products.sort(key=lambda x: x['score'], reverse=True)
             
-            good = [p for p in parsed_products if p['rating'] >= 4.5]
-            if len(good) >= 1:
-                good.sort(key=lambda x: x['sales'], reverse=True)
-                return good[:4]
-            
-            parsed_products.sort(key=lambda x: x['sales'], reverse=True)
+            # החזרת ה-4 הכי איכותיים
             return parsed_products[:4]
 
         except Exception as e:
@@ -221,11 +235,11 @@ def handle_message(message):
         if not query.lower().startswith("חפש לי"): return
         search_query = query[7:].strip()
         
-        loading = bot.send_message(message.chat.id, f"🔍 <b>סורק עבור: {search_query}...</b>", parse_mode="HTML")
+        loading = bot.send_message(message.chat.id, f"🔍 <b>סורק את הרשת עבור: {search_query}...</b>", parse_mode="HTML")
         products = engine.search(search_query)
         
         if not products:
-            bot.edit_message_text("❌ לא מצאתי תוצאות איכותיות. נסה חיפוש אחר.", message.chat.id, loading.message_id)
+            bot.edit_message_text("❌ לא מצאתי תוצאות שעומדות ברף האיכות. נסה חיפוש אחר.", message.chat.id, loading.message_id)
             return
 
         links = []
@@ -233,7 +247,7 @@ def handle_message(message):
         collage = create_collage([p['image'] for p in products])
         bot.delete_message(message.chat.id, loading.message_id)
         
-        bot.send_photo(message.chat.id, collage, caption=f"🎯 <b>הדילים הכי טובים ל-{search_query}:</b>", parse_mode="HTML")
+        bot.send_photo(message.chat.id, collage, caption=f"🎯 <b>הדילים הכי שווים ל-{search_query}:</b>", parse_mode="HTML")
 
         text_msg = "💎 <b>נבחרת הדילים של DrDeals</b>\n" + "—" * 12 + "\n\n"
         markup = types.InlineKeyboardMarkup(row_width=2)
@@ -242,14 +256,13 @@ def handle_message(message):
         for i, p in enumerate(products):
             short_url = links[i]
             
-            # --- עיצוב מנצח ---
             text_msg += f"{i+1}. 🏆 <b>{html.escape(p['title'])}</b>\n"
             text_msg += f"💰 מחיר: <b>{p['price']}₪</b> | ⭐ דירוג: <b>{p['rating']}</b>\n"
             
             if p['sales'] > 0:
                 text_msg += f"🔥 נחטף ע''י: <b>{p['sales']}+ רוכשים</b>\n"
             else:
-                text_msg += f"✨ <b>פריט מבוקש ומומלץ</b>\n"
+                text_msg += f"✨ <b>בחירת המערכת</b>\n"
                 
             text_msg += f"🚚 <b>משלוח מהיר / Choice</b>\n"
             text_msg += f"🔗 {short_url}\n\n"
