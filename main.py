@@ -23,13 +23,11 @@ BOT_TOKEN = "8575064945:AAH_2WmHMH25TMFvt4FM6OWwfqFcDAaqCPw"
 APP_KEY = "523460"
 APP_SECRET = "Co7bNfYfqlu8KTdj2asXQV78oziICQEs"
 TRACKING_ID = "DrDeals"
-
-# --- ה-ID שלך (מעודכן) ---
-ADMIN_ID = 173837076
+ADMIN_ID = 173837076  # ה-ID שלך למעקב
 
 print("🔄 מתחבר לטלגרם...")
 bot = telebot.TeleBot(BOT_TOKEN)
-print("✅ הבוט מחובר - גרסת הריגול העסקי")
+print("✅ הבוט מחובר - גרסת פרימיום (סינון איכות + ריגול)")
 
 class FreeSmartEngine:
     def __init__(self):
@@ -115,6 +113,21 @@ class FreeSmartEngine:
                 })
             except: continue
 
+        # === כאן התיקון הקריטי: סינון איכות חכם ===
+        
+        # 1. קבוצת העילית: דירוג מעל 4.7 + לפחות 10 מכירות
+        premium = [p for p in parsed_products if p['rating'] >= 4.7 and p['sales'] >= 10]
+        if len(premium) >= 2:
+            premium.sort(key=lambda x: x['sales'], reverse=True)
+            return premium[:4]
+        
+        # 2. קבוצה טובה: דירוג מעל 4.5
+        good = [p for p in parsed_products if p['rating'] >= 4.5]
+        if len(good) >= 1:
+            good.sort(key=lambda x: x['sales'], reverse=True)
+            return good[:4]
+            
+        # 3. אם לא מצאנו איכותיים, נחזיר את הנמכרים ביותר
         parsed_products.sort(key=lambda x: x['sales'], reverse=True)
         return parsed_products[:4]
 
@@ -253,17 +266,12 @@ def send_results_to_user(chat_id, products, query_text):
     markup.add(*buttons)
     bot.send_message(chat_id, text_msg, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
 
-# ==========================================================
-#  פונקציית המלשין (דיווח למנהל)
-# ==========================================================
 def notify_admin(user, query_type, content):
     if not ADMIN_ID or ADMIN_ID == 0: return
-    
     try:
         user_name = user.first_name
         username = f"(@{user.username})" if user.username else ""
         user_id = user.id
-        
         msg = (
             f"🕵️‍♂️ <b>פעילות חדשה!</b>\n"
             f"👤 <b>משתמש:</b> {user_name} {username}\n"
@@ -275,14 +283,10 @@ def notify_admin(user, query_type, content):
     except Exception as e:
         print(f"Error notifying admin: {e}")
 
-# ==========================================================
-#  הנדלר לפקודת ההתחלה
-# ==========================================================
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
-    # דיווח למנהל על משתמש חדש
     notify_admin(message.from_user, "Start", "לחץ על כפתור התחל")
-
+    
     welcome_text = (
         "👋 <b>ברוכים הבאים ל-DrDeals!</b>\n"
         "הבוט החכם שימצא לכם את הדילים הכי שווים באליאקספרס.\n\n"
@@ -316,12 +320,9 @@ def send_welcome(message):
     else:
         bot.send_message(message.chat.id, welcome_text, parse_mode="HTML", reply_markup=markup)
 
-# --- הנדלר לתמונות ---
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
-    # דיווח למנהל
     notify_admin(message.from_user, "Image Search", "שלח תמונה לחיפוש")
-
     try:
         loading = bot.send_message(message.chat.id, "📸 <b>קולט תמונה ומפעיל סריקה...</b>", parse_mode="HTML")
         file_info = bot.get_file(message.photo[-1].file_id)
@@ -340,13 +341,10 @@ def handle_photo(message):
         print(f"Error photo: {e}")
         bot.send_message(message.chat.id, "תקלה בעיבוד התמונה.")
 
-# --- הנדלר לטקסט ---
 @bot.message_handler(func=lambda message: True)
 def handle_text(message):
     try:
         query = message.text.strip()
-        
-        # דיווח למנהל (אפילו אם זה סתם "היי")
         notify_admin(message.from_user, "Text Search", query)
 
         if not query.lower().startswith("חפש לי"): return
