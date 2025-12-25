@@ -5,7 +5,7 @@ import hashlib
 import time
 import html
 import json
-import re # חובה! מנוע חילוץ המספרים
+import re
 from telebot import types
 from PIL import Image, ImageDraw
 
@@ -14,8 +14,8 @@ try:
     from deep_translator import GoogleTranslator
 except ImportError:
     print("❌ שגיאה: ספריית deep_translator חסרה!")
-    print("אנא הרץ בטרמינל: pip install deep-translator")
-    exit()
+    # בריילוואי זה לא יעצור את הריצה, אבל כדאי לוודא שזה ב-requirements.txt
+    pass
 
 # ==========================================
 # הגדרות ופרטים אישיים
@@ -29,77 +29,44 @@ print("🔄 מתחבר לטלגרם...")
 bot = telebot.TeleBot(BOT_TOKEN)
 print("✅ הבוט מחובר ומוכן לעבודה!")
 
-# ==============================================================================
-#  המנוע החכם - גרסת ה-Regex (חילוץ מכירות כירורגי)
-# ==============================================================================
-
 class FreeSmartEngine:
     def __init__(self):
         self.keyword_booster = {
             "charger": "GaN fast charging",
             "cable": "braided fast data",
             "headphones": "noise cancelling bluetooth 5.3",
-            "earbuds": "tws anc",
             "watch": "amoled smart watch waterproof",
-            "case": "shockproof silicone",
-            "screen protector": "tempered glass 9h",
-            "camera": "4k wifi ip",
-            "cleaner": "robot vacuum parts",
-            "holder": "car mount magnetic strong",
-            "bag": "waterproof anti-theft",
             "dash": "70mai ddpai 4k",
         }
 
     def _enhance_query(self, user_query):
         try:
             en_query = GoogleTranslator(source='auto', target='en').translate(user_query).lower()
-            final_query = en_query
             for key, boost in self.keyword_booster.items():
                 if key in en_query and boost not in en_query:
-                    final_query = f"{en_query} {boost}"
-                    break
-            return final_query
+                    return f"{en_query} {boost}"
+            return en_query
         except:
             return user_query
 
     def _parse_sales(self, p):
-        """פונקציה כירורגית לחילוץ מספרים מתוך טקסט מבולגן"""
-        # רשימת השדות שאליאקספרס מחביאים בהם מידע
-        keys_to_check = ['last_volume', 'sale_volume', 'app_sale_volume', 'orders', 'volume']
-        
+        # ניסיון אגרסיבי לחילוץ
+        keys_to_check = ['last_volume', 'sale_volume', 'app_sale_volume', 'orders', 'volume', 'sales']
         for key in keys_to_check:
             val = p.get(key)
             if not val: continue
-            
-            # המרה לטקסט קטן לניתוח
             val_str = str(val).lower()
             if val_str == '0': continue
-
+            
             try:
-                # 1. שימוש ב-Regex למציאת המספר הראשון בטקסט (למשל מ-"over 5k sold" ייקח את ה-"5")
                 match = re.search(r'(\d+(?:\.\d+)?)', val_str)
                 if not match: continue
-                
-                number = float(match.group(1))
-                
-                # 2. בדיקת מכפילים (K, M)
-                if 'k' in val_str:
-                    number *= 1000
-                elif 'm' in val_str:
-                    number *= 1000000
-                elif 'w' in val_str: # סימון סיני ל-10 אלף
-                    number *= 10000
-                
-                final_num = int(number)
-                
-                # הדפסת בדיקה לחלון השחור (כדי שנראה שזה עובד)
-                # print(f"DEBUG SALES: Found '{val}' in key '{key}' -> Parsed: {final_num}")
-                
-                if final_num > 0:
-                    return final_num
-            except:
-                continue
-                
+                num = float(match.group(1))
+                if 'k' in val_str: num *= 1000
+                elif 'w' in val_str: num *= 10000
+                elif 'm' in val_str: num *= 1000000
+                if num > 0: return int(num)
+            except: continue
         return 0
 
     def search(self, original_query):
@@ -130,14 +97,23 @@ class FreeSmartEngine:
             if not products_raw: return []
             if isinstance(products_raw, dict): products_raw = [products_raw]
 
+            # ======================================================
+            # מלשין ה-LOGS - מדפיס את המידע הגולמי לריילוואי
+            # ======================================================
+            if len(products_raw) > 0:
+                print("\n" + "="*40)
+                print("🔥🔥🔥 DEBUG RAW DATA (FIRST PRODUCT) 🔥🔥🔥")
+                # מדפיס את כל המידע שיש על המוצר הראשון כדי שנראה איפה המכירות מסתתרות
+                print(json.dumps(products_raw[0], indent=4, ensure_ascii=False))
+                print("="*40 + "\n")
+            # ======================================================
+
             parsed_products = []
             for p in products_raw:
                 try:
                     sales = self._parse_sales(p)
-                    
                     rate_str = str(p.get('evaluate_rate', '0')).replace('%', '')
                     rating = float(rate_str) / 20 if rate_str else 0.0
-                    
                     try: title_he = GoogleTranslator(source='auto', target='iw').translate(p['product_title'])
                     except: title_he = p['product_title']
 
@@ -171,10 +147,6 @@ class FreeSmartEngine:
 
 engine = FreeSmartEngine()
 
-# ==============================================================================
-#  פונקציות עזר ועיצוב
-# ==============================================================================
-
 def generate_sign(params):
     s = APP_SECRET + ''.join([f"{k}{v}" for k, v in sorted(params.items())]) + APP_SECRET
     return hashlib.md5(s.encode('utf-8')).hexdigest().upper()
@@ -195,20 +167,6 @@ def get_short_link(raw_url):
     except: pass
     return clean_url
 
-def draw_small_number(draw, cx, cy, num):
-    draw.ellipse((cx, cy, cx+35, cy+35), fill="#FFD700", outline="black", width=2)
-    bx, by = cx + 13, cy + 7
-    if num == 1: draw.rectangle([bx+2, by, bx+6, by+22], fill="black")
-    elif num == 2:
-        for r in [[0,0,10,3],[8,0,10,12],[0,10,10,13],[0,12,3,25],[0,22,10,25]]:
-            draw.rectangle([bx+r[0], by+r[1], bx+r[2], by+r[3]], fill="black")
-    elif num == 3:
-        for r in [[0,0,10,3],[8,0,10,25],[0,10,10,13],[0,22,10,25]]:
-            draw.rectangle([bx+r[0], by+r[1], bx+r[2], by+r[3]], fill="black")
-    elif num == 4:
-        for r in [[0,0,3,12],[0,10,15,13],[8,0,10,20]]:
-            draw.rectangle([bx+r[0], by+r[1], bx+r[2], by+r[3]], fill="black")
-
 def create_collage(image_urls):
     images = []
     for url in image_urls:
@@ -223,10 +181,22 @@ def create_collage(image_urls):
     collage = Image.new('RGB', (1000, 1000), 'white')
     positions, draw = [(0,0), (500,0), (0,500), (500,500)], ImageDraw.Draw(collage)
     
+    # פונקציית עזר לציור המספרים (מוטמעת כאן)
+    def draw_num(d, cx, cy, num):
+        d.ellipse((cx, cy, cx+35, cy+35), fill="#FFD700", outline="black", width=2)
+        bx, by = cx + 13, cy + 7
+        if num == 1: d.rectangle([bx+2, by, bx+6, by+22], fill="black")
+        elif num == 2:
+            for r in [[0,0,10,3],[8,0,10,12],[0,10,10,13],[0,12,3,25],[0,22,10,25]]: d.rectangle([bx+r[0], by+r[1], bx+r[2], by+r[3]], fill="black")
+        elif num == 3:
+            for r in [[0,0,10,3],[8,0,10,25],[0,10,10,13],[0,22,10,25]]: d.rectangle([bx+r[0], by+r[1], bx+r[2], by+r[3]], fill="black")
+        elif num == 4:
+            for r in [[0,0,3,12],[0,10,15,13],[8,0,10,20]]: d.rectangle([bx+r[0], by+r[1], bx+r[2], by+r[3]], fill="black")
+
     for i, img in enumerate(images[:4]):
         collage.paste(img, positions[i])
         if i < len(image_urls):
-            draw_small_number(draw, positions[i][0]+15, positions[i][1]+15, i+1)
+            draw_num(draw, positions[i][0]+15, positions[i][1]+15, i+1)
             
     output = io.BytesIO()
     collage.save(output, format='JPEG', quality=95)
@@ -240,8 +210,7 @@ def handle_message(message):
         if not query.lower().startswith("חפש לי"): return
         search_query = query[7:].strip()
         
-        loading = bot.send_message(message.chat.id, f"🔍 <b>סורק את הרשת עבור: {search_query}...</b>", parse_mode="HTML")
-        
+        loading = bot.send_message(message.chat.id, f"🔍 <b>סורק עבור: {search_query}...</b>", parse_mode="HTML")
         products = engine.search(search_query)
         
         if not products:
@@ -250,7 +219,6 @@ def handle_message(message):
 
         links = []
         for p in products: links.append(get_short_link(p['raw_url']))
-        
         collage = create_collage([p['image'] for p in products])
         bot.delete_message(message.chat.id, loading.message_id)
         
@@ -262,26 +230,15 @@ def handle_message(message):
         
         for i, p in enumerate(products):
             short_url = links[i]
-            
-            text_msg += f"{i+1}. 🏆 <b>{html.escape(p['title'])}</b>\n"
-            text_msg += f"💰 מחיר: <b>{p['price']}₪</b> | ⭐ דירוג: <b>{p['rating']}</b>\n"
-            
-            # לוגיקה חכמה לתצוגת מכירות
             if p['sales'] > 0:
-                text_msg += f"🔥 נחטף ע''י: <b>{p['sales']}+ רוכשים</b>\n"
+                text_msg += f"{i+1}. 🏆 <b>{html.escape(p['title'])}</b>\n💰 <b>{p['price']}₪</b> | ⭐ {p['rating']} | 🔥 <b>{p['sales']}+ נמכרו</b>\n🔗 {short_url}\n\n"
             else:
-                text_msg += f"✨ <b>פריט מבוקש ומומלץ</b>\n"
-            
-            text_msg += f"🚚 <b>משלוח מהיר / Choice</b>\n"
-            text_msg += f"🔗 {short_url}\n\n"
-            
+                text_msg += f"{i+1}. 🏆 <b>{html.escape(p['title'])}</b>\n💰 <b>{p['price']}₪</b> | ⭐ {p['rating']} | ✨ <b>מומלץ!</b>\n🔗 {short_url}\n\n"
             buttons.append(types.InlineKeyboardButton(text=f"🎁 לקנייה {i+1}", url=short_url))
 
         text_msg += "—" * 12 + "\n🛍️ <b>קנייה מהנה! | DrDeals</b>"
         markup.add(*buttons)
-        
         bot.send_message(message.chat.id, text_msg, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
-        
     except Exception as e:
         print(f"Error: {e}")
 
