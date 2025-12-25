@@ -4,11 +4,14 @@ import io
 import hashlib
 import time
 import html
+import json
 from telebot import types
 from PIL import Image, ImageDraw
 from deep_translator import GoogleTranslator
 
-# --- הגדרות מערכת ---
+# ==========================================
+# הגדרות מערכת ופרטי גישה
+# ==========================================
 BOT_TOKEN = "8575064945:AAH_2WmHMH25TMFvt4FM6OWwfqFcDAaqCPw"
 APP_KEY = "523460"
 APP_SECRET = "Co7bNfYfqlu8KTdj2asXQV78oziICQEs"
@@ -17,12 +20,12 @@ TRACKING_ID = "DrDeals"
 bot = telebot.TeleBot(BOT_TOKEN)
 
 # ==============================================================================
-#  המנוע החכם - גרסת החינם (0 שקלים)
+#  המנוע החכם - גרסת החינם המשופרת (Tiered Search)
 # ==============================================================================
 
 class FreeSmartEngine:
     def __init__(self):
-        # מילון מילות כוח - משפר את החיפוש ידנית במקום AI
+        # מילון מילות כוח - מוסיף מילים מקצועיות לחיפוש אוטומטית
         self.keyword_booster = {
             "charger": "GaN fast charging",
             "cable": "braided fast data",
@@ -35,38 +38,39 @@ class FreeSmartEngine:
             "cleaner": "robot vacuum parts",
             "holder": "car mount magnetic strong",
             "lamp": "led dimmable smart",
-            "bag": "waterproof anti-theft"
+            "bag": "waterproof anti-theft",
+            "dash": "70mai ddpai 4k", # חיזוק ספציפי למצלמות רכב
+            "mouse": "ergonomic wireless silent"
         }
 
     def _enhance_query(self, user_query):
-        """
-        שלב 1: תרגום ושיפור מילות חיפוש ללא עלות
-        """
+        """תרגום ושיפור מילות החיפוש"""
         try:
-            # תרגום לעברית לאנגלית
+            # תרגום עברית לאנגלית
             en_query = GoogleTranslator(source='auto', target='en').translate(user_query).lower()
             
-            # בדיקה האם יש מילות מפתח שאפשר לחזק
-            # למשל: אם המשתמש חיפש "מטען", המתרגם נותן "charger",
-            # ואנחנו מוסיפים "GaN fast charging" כדי לקבל תוצאות איכותיות
+            # בדיקת מילות כוח
             final_query = en_query
             for key, boost in self.keyword_booster.items():
                 if key in en_query:
-                    final_query = f"{en_query} {boost}"
-                    break # מספיק בוסט אחד
+                    # אם המילה קיימת, נוסיף את הביטוי המקצועי
+                    if boost not in en_query: 
+                        final_query = f"{en_query} {boost}"
+                    break
             
             return final_query
         except:
-            return user_query # במקרה חירום משתמשים במקור
+            return user_query # במקרה של תקלה בתרגום, מחזיר את המקור
 
     def search(self, original_query):
-        """חיפוש באליאקספרס עם אופטימיזציה מקסימלית"""
+        """הלוגיקה המרכזית: מנסה להביא את הכי טוב, אבל לא מחזיר ריק"""
         
-        # 1. הכנת מילות המפתח המשופרות
+        # 1. הכנת מילות חיפוש
         smart_keywords = self._enhance_query(original_query)
-        print(f"Original: {original_query} -> Smart: {smart_keywords}")
+        print(f"[*] Processing Query: '{original_query}' -> '{smart_keywords}'")
 
-        # 2. בניית הבקשה - הסוד הוא במיון ובסינון
+        # 2. שליפת נתונים רחבה מאליאקספרס
+        # הסרנו פילטרים קשוחים מה-API כדי לקבל כמה שיותר תוצאות לסינון עצמי
         params = {
             'app_key': APP_KEY,
             'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
@@ -78,11 +82,8 @@ class FreeSmartEngine:
             'keywords': smart_keywords,
             'target_currency': 'ILS',
             'ship_to_country': 'IL',
-            # הטריקים לתוצאות טובות בחינם:
-            'sort': 'LAST_VOLUME_DESC', # רק מה שהכי נמכר!
-            'min_rating': '4.6', # לא מציג זבל מתחת ל-4.6
-            'page_size': '30', # שואבים הרבה כדי לסנן ידנית
-            'is_free_shipping': 'true' # אופציונלי: רק משלוח חינם
+            'sort': 'LAST_VOLUME_DESC', # הכי נמכרים
+            'page_size': '50', # מושכים מספיק כדי שיהיה ממה לבחור
         }
         params['sign'] = generate_sign(params)
         
@@ -91,50 +92,72 @@ class FreeSmartEngine:
             data = resp.get('aliexpress_affiliate_product_query_response', {}).get('resp_result', {}).get('result', {})
             products_raw = data.get('products', {}).get('product', [])
             
-            if not products_raw: return []
+            if not products_raw:
+                print("[-] AliExpress API returned 0 results.")
+                return []
+            
             if isinstance(products_raw, dict): products_raw = [products_raw]
 
-            # 3. מסננת האיכות הידנית
-            final_products = []
+            # 3. נרמול נתונים (סידור המספרים)
+            parsed_products = []
             for p in products_raw:
-                try: 
-                    price = float(p.get('target_sale_price', '0'))
+                try:
                     sales = int(p.get('last_volume', 0))
-                    # המרת דירוג
+                    
+                    # טיפול בדירוג (לפעמים מגיע ריק)
                     rate_str = str(p.get('evaluate_rate', '0')).replace('%', '')
-                    rating = float(rate_str) / 20 
-                except: continue
-
-                # חוקי הברזל (מסננת):
-                # רק מוצרים שנמכרו לפחות 30 פעמים (הוכחה חברתית)
-                # ורק מוצרים עם ציון מעל 4.7
-                if sales > 30 and rating >= 4.7:
-                    try: 
-                        # תרגום כותרת חזרה לעברית
-                        title_he = GoogleTranslator(source='auto', target='iw').translate(p['product_title'])
+                    if not rate_str or rate_str == '0':
+                        rating = 4.5 # ברירת מחדל למוצר חדש ומבטיח
+                    else:
+                        rating = float(rate_str) / 20
+                    
+                    # תרגום כותרת לעברית לתצוגה יפה
+                    try: title_he = GoogleTranslator(source='auto', target='iw').translate(p['product_title'])
                     except: title_he = p['product_title']
 
-                    final_products.append({
-                        "title": title_he[:80], # קיצור כותרת
+                    parsed_products.append({
+                        "title": title_he[:80], # חיתוך כותרת ארוכה
                         "price": p.get('target_sale_price', 'N/A'),
                         "image": p.get('product_main_image_url'),
                         "raw_url": p.get('product_detail_url', ''),
                         "rating": round(rating, 1),
                         "sales": sales
                     })
+                except Exception as e:
+                    continue
 
-            # מיון פנימי שלנו: הכי הרבה מכירות קודם
-            final_products.sort(key=lambda x: x['sales'], reverse=True)
-            return final_products[:4] # מחזיר את ה-4 הכי חזקים
+            if not parsed_products:
+                return []
+
+            # 4. מדרג הסינון (The Tier System)
+            
+            # שלב א': היהלומים (דירוג מעולה + מכירות מוכחות)
+            premium = [p for p in parsed_products if p['rating'] >= 4.7 and p['sales'] >= 10]
+            if len(premium) >= 2:
+                print(f"[+] Found {len(premium)} Premium items")
+                premium.sort(key=lambda x: x['sales'], reverse=True)
+                return premium[:4]
+            
+            # שלב ב': האיכותיים (דירוג טוב)
+            good = [p for p in parsed_products if p['rating'] >= 4.5]
+            if len(good) >= 1:
+                print(f"[+] Found {len(good)} Good items (Tier 2)")
+                good.sort(key=lambda x: x['sales'], reverse=True)
+                return good[:4]
+            
+            # שלב ג': רשת הביטחון (פשוט הכי נמכרים)
+            print("[+] Fallback to Top Sales (Tier 3)")
+            parsed_products.sort(key=lambda x: x['sales'], reverse=True)
+            return parsed_products[:4]
 
         except Exception as e:
-            print(f"Search Error: {e}")
+            print(f"Search Engine Error: {e}")
             return []
 
 engine = FreeSmartEngine()
 
 # ==============================================================================
-#  פונקציות עזר (ללא שינוי)
+#  פונקציות עזר (חתימות, קיצורים, תמונות)
 # ==============================================================================
 
 def generate_sign(params):
@@ -144,6 +167,7 @@ def generate_sign(params):
 def get_short_link(raw_url):
     clean_url = raw_url.split('?')[0]
     try:
+        # time.sleep(0.2) # מינימום המתנה
         params = {
             'app_key': APP_KEY, 'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
             'sign_method': 'md5', 'method': 'aliexpress.affiliate.link.generate',
@@ -158,8 +182,10 @@ def get_short_link(raw_url):
     return clean_url
 
 def draw_small_number(draw, cx, cy, num):
+    # ציור מספרים על הקולאז'
     draw.ellipse((cx, cy, cx+35, cy+35), fill="#FFD700", outline="black", width=2)
     bx, by = cx + 13, cy + 7
+    # פונט ידני פשוט (פיקסלים)
     if num == 1: draw.rectangle([bx+2, by, bx+6, by+22], fill="black")
     elif num == 2:
         for r in [[0,0,10,3],[8,0,10,12],[0,10,10,13],[0,12,3,25],[0,22,10,25]]:
@@ -179,18 +205,27 @@ def create_collage(image_urls):
             img = Image.open(io.BytesIO(r.content)).convert('RGB').resize((500,500))
             images.append(img)
         except: images.append(Image.new('RGB', (500,500), color='#EEEEEE'))
+    
+    # אם יש פחות מ-4 תמונות, נשלים ל-4 כדי שהקוד לא יקרוס
+    while len(images) < 4:
+        images.append(Image.new('RGB', (500,500), color='#FFFFFF'))
+
     collage = Image.new('RGB', (1000, 1000), 'white')
     positions, draw = [(0,0), (500,0), (0,500), (500,500)], ImageDraw.Draw(collage)
-    for i, img in enumerate(images):
+    
+    for i, img in enumerate(images[:4]):
         collage.paste(img, positions[i])
-        draw_small_number(draw, positions[i][0]+15, positions[i][1]+15, i+1)
+        # מצייר מספר רק אם יש שם מוצר אמיתי
+        if i < len(image_urls):
+            draw_small_number(draw, positions[i][0]+15, positions[i][1]+15, i+1)
+            
     output = io.BytesIO()
     collage.save(output, format='JPEG', quality=95)
     output.seek(0)
     return output
 
 # ==============================================================================
-#  טלגרם הנדלר
+#  טלגרם הנדלר - הממשק מול המשתמש
 # ==============================================================================
 
 @bot.message_handler(func=lambda message: True)
@@ -200,40 +235,57 @@ def handle_message(message):
         if not query.lower().startswith("חפש לי"): return
         search_query = query[7:].strip()
         
-        loading = bot.send_message(message.chat.id, f"🔍 <b>מחפש מציאות ל: {search_query}...</b>", parse_mode="HTML")
+        # הודעת פתיחה
+        loading = bot.send_message(message.chat.id, f"🕵️‍♂️ <b>מפעיל סוכנים לאיתור: {search_query}...</b>", parse_mode="HTML")
         
-        # שימוש במנוע החינמי
+        # הרצת החיפוש החכם
         products = engine.search(search_query)
         
         if not products:
-            bot.edit_message_text("🤔 לא מצאתי תוצאות איכותיות מספיק (דירוג נמוך או מעט הזמנות). נסה לחפש משהו אחר.", message.chat.id, loading.message_id)
+            bot.edit_message_text("❌ לא מצאתי תוצאות. נסה לחפש באנגלית או מילים כלליות יותר.", message.chat.id, loading.message_id)
             return
 
+        # המרת קישורים (לוקח שניה-שתיים)
         links = []
         for p in products:
             links.append(get_short_link(p['raw_url']))
         
+        # יצירת תמונה
         collage = create_collage([p['image'] for p in products])
         bot.delete_message(message.chat.id, loading.message_id)
-        bot.send_photo(message.chat.id, collage, caption=f"🎯 <b>המובחרים ביותר ל-{search_query}:</b>", parse_mode="HTML")
+        
+        # כותרת ההודעה
+        caption_text = f"🎯 <b>הנה מה שמצאתי עבור: {search_query}</b>"
+        bot.send_photo(message.chat.id, collage, caption=caption_text, parse_mode="HTML")
 
-        text_msg = "💎 <b>נבחרת הדילים של DrDeals</b>\n" + "—" * 12 + "\n\n"
-        markup = types.InlineKeyboardMarkup(row_width=2)
+        # תוכן ההודעה והכפתורים
+        text_msg = "💎 <b>המומלצים של DrDeals</b>\n" + "—" * 15 + "\n\n"
+        markup = types.InlineKeyboardMarkup(row_width=1) # כפתור אחד בשורה לנוחות
         buttons = []
+        
         for i, p in enumerate(products):
             short_url = links[i]
-            text_msg += f"{i+1}. 🏆 <b>{html.escape(p['title'])}</b>\n"
-            text_msg += f"🔥 נרכש ע''י {p['sales']} אנשים | ⭐ {p['rating']}\n"
-            text_msg += f"💰 מחיר: <b>{p['price']}₪</b>\n"
-            text_msg += f"🔗 {short_url}\n\n"
-            buttons.append(types.InlineKeyboardButton(text=f"🛍️ קנייה {i+1}", url=short_url))
+            # בניית הטקסט לכל מוצר
+            text_msg += f"<b>{i+1}. {html.escape(p['title'])}</b>\n"
+            text_msg += f"⭐ דירוג: <b>{p['rating']}</b> | 🔥 נמכר: <b>{p['sales']}+ יח'</b>\n"
+            text_msg += f"💵 מחיר: <b>{p['price']}₪</b>\n"
+            text_msg += f"🔗 <i>לחץ למטה לרכישה</i>\n\n"
+            
+            # כפתור הנעה לפעולה
+            btn_text = f"🛍️ לרכישת מוצר {i+1} ב-{p['price']}₪"
+            buttons.append(types.InlineKeyboardButton(text=btn_text, url=short_url))
 
-        text_msg += "—" * 12 + "\n🚀 <b>נמצא על בסיס כמות רכישות ודירוג</b>"
+        text_msg += "—" * 15 + "\n🛡️ <b>קנייה בטוחה דרך אליאקספרס</b>"
         markup.add(*buttons)
+        
         bot.send_message(message.chat.id, text_msg, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
+        
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"CRITICAL ERROR: {e}")
+        try:
+            bot.send_message(message.chat.id, "אופס, קרתה תקלה טכנית קטנה. נסה שוב עוד רגע.")
+        except: pass
 
-print("Free Bot Running...")
+print("✅ Bot is live and running with Tiered Search Engine!")
 bot.remove_webhook()
 bot.infinity_polling(timeout=60)
