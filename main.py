@@ -24,9 +24,12 @@ APP_KEY = "523460"
 APP_SECRET = "Co7bNfYfqlu8KTdj2asXQV78oziICQEs"
 TRACKING_ID = "DrDeals"
 
+# --- ה-ID שלך (מעודכן) ---
+ADMIN_ID = 173837076
+
 print("🔄 מתחבר לטלגרם...")
 bot = telebot.TeleBot(BOT_TOKEN)
-print("✅ הבוט מחובר - גרסה נקייה (ללא הבטחת תמונות)")
+print("✅ הבוט מחובר - גרסת הריגול העסקי")
 
 class FreeSmartEngine:
     def __init__(self):
@@ -251,11 +254,35 @@ def send_results_to_user(chat_id, products, query_text):
     bot.send_message(chat_id, text_msg, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
 
 # ==========================================================
-#  הנדלר לפקודת ההתחלה - מעודכן (בלי תמונות)
+#  פונקציית המלשין (דיווח למנהל)
+# ==========================================================
+def notify_admin(user, query_type, content):
+    if not ADMIN_ID or ADMIN_ID == 0: return
+    
+    try:
+        user_name = user.first_name
+        username = f"(@{user.username})" if user.username else ""
+        user_id = user.id
+        
+        msg = (
+            f"🕵️‍♂️ <b>פעילות חדשה!</b>\n"
+            f"👤 <b>משתמש:</b> {user_name} {username}\n"
+            f"🆔 <b>מזהה:</b> {user_id}\n"
+            f"🔍 <b>סוג:</b> {query_type}\n"
+            f"📝 <b>תוכן:</b> {content}"
+        )
+        bot.send_message(ADMIN_ID, msg, parse_mode="HTML")
+    except Exception as e:
+        print(f"Error notifying admin: {e}")
+
+# ==========================================================
+#  הנדלר לפקודת ההתחלה
 # ==========================================================
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
-    # הטקסט המעודכן ללא אזכור חיפוש תמונה
+    # דיווח למנהל על משתמש חדש
+    notify_admin(message.from_user, "Start", "לחץ על כפתור התחל")
+
     welcome_text = (
         "👋 <b>ברוכים הבאים ל-DrDeals!</b>\n"
         "הבוט החכם שימצא לכם את הדילים הכי שווים באליאקספרס.\n\n"
@@ -280,7 +307,6 @@ def send_welcome(message):
     btn4 = types.KeyboardButton("חפש לי מצלמת רכב")
     markup.add(btn1, btn2, btn3, btn4)
 
-    # בדיקה אם קובץ התמונה קיים בתיקייה
     if os.path.exists('welcome.jpg'):
         try:
             with open('welcome.jpg', 'rb') as photo:
@@ -290,10 +316,12 @@ def send_welcome(message):
     else:
         bot.send_message(message.chat.id, welcome_text, parse_mode="HTML", reply_markup=markup)
 
-# --- הנדלר לתמונות (נשאר מוסתר ברקע) ---
+# --- הנדלר לתמונות ---
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
-    # כאן לא שיניתי, כדי שאם בטעות ישלחו לא יקרוס, אבל זה לא מפורסם
+    # דיווח למנהל
+    notify_admin(message.from_user, "Image Search", "שלח תמונה לחיפוש")
+
     try:
         loading = bot.send_message(message.chat.id, "📸 <b>קולט תמונה ומפעיל סריקה...</b>", parse_mode="HTML")
         file_info = bot.get_file(message.photo[-1].file_id)
@@ -303,7 +331,6 @@ def handle_photo(message):
         bot.delete_message(message.chat.id, loading.message_id)
         
         if products is None:
-             # הודעה מעודכנת - יותר כללית
             bot.send_message(message.chat.id, "⚠️ <b>חיפוש לפי תמונה לא זמין כרגע.</b>\nאנא כתוב לי את שם המוצר במקום.", parse_mode="HTML")
         elif not products:
              bot.send_message(message.chat.id, "❌ לא מצאתי מוצר דומה.")
@@ -318,6 +345,10 @@ def handle_photo(message):
 def handle_text(message):
     try:
         query = message.text.strip()
+        
+        # דיווח למנהל (אפילו אם זה סתם "היי")
+        notify_admin(message.from_user, "Text Search", query)
+
         if not query.lower().startswith("חפש לי"): return
         search_query = query[7:].strip()
         
