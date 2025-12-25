@@ -22,9 +22,9 @@ BOT_TOKEN = "8575064945:AAH_2WmHMH25TMFvt4FM6OWwfqFcDAaqCPw"
 APP_KEY = "523460"
 APP_SECRET = "Co7bNfYfqlu8KTdj2asXQV78oziICQEs"
 TRACKING_ID = "DrDeals"
-ADMIN_ID = 173837076  # <--- לכאן יישלח הדיווח
+ADMIN_ID = 173837076
 
-# משיכת מפתח
+# משיכת מפתח מהכספת
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 if GEMINI_API_KEY:
@@ -40,9 +40,6 @@ bot = telebot.TeleBot(BOT_TOKEN)
 # ==========================================
 
 def notify_admin(user, query):
-    """
-    המלשינון: שולח הודעה למנהל על כל חיפוש
-    """
     if not ADMIN_ID: return
     try:
         username = f"@{user.username}" if user.username else "ללא שם משתמש"
@@ -129,9 +126,6 @@ def get_ali_products(query):
     except: return [], query_en
 
 def the_guillotine_filter(products):
-    """
-    שיטת הגיליוטינה: חותך את החצי התחתון של המחירים ומעיף מילים אסורות
-    """
     if not products or len(products) < 5: return products
     
     blacklist = ["strobe", "light", "lamp", "propeller", "battery", "part", "accessory", "cable", "case", "cover", "gift", "toy", "mini"]
@@ -146,10 +140,7 @@ def the_guillotine_filter(products):
     if len(clean_products) < 2: 
         clean_products = products
     
-    # מיון מהיקר לזול
     clean_products.sort(key=lambda x: float(x.get('target_sale_price', 0)), reverse=True)
-    
-    # לוקחים את החצי היקר יותר
     half_index = len(clean_products) // 2
     premium_half = clean_products[:half_index]
     
@@ -196,7 +187,6 @@ def filter_with_snob_ai(products, query_en):
 
 @bot.message_handler(commands=['start'])
 def start(m):
-    # הפעלת המלשינון גם בהתחלה (אופציונלי, כדי לדעת מי נכנס)
     notify_admin(m.from_user, "לחץ START")
     
     welcome_msg = (
@@ -206,4 +196,83 @@ def start(m):
         "ומשאיר לכם רק ציוד איכותי.\n\n"
         "👇 <b>נסה אותי עכשיו:</b>"
     )
-    markup = types.ReplyKeyboardMarkup(resize_
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    markup.add("חפש לי רחפן", "חפש לי אוזניות", "חפש לי שעון חכם", "❓ עזרה וטיפים")
+    
+    if os.path.exists('welcome.jpg'):
+        try:
+            with open('welcome.jpg', 'rb') as photo:
+                bot.send_photo(m.chat.id, photo, caption=welcome_msg, parse_mode="HTML", reply_markup=markup)
+        except:
+            bot.send_message(m.chat.id, welcome_msg, parse_mode="HTML", reply_markup=markup)
+    else:
+        bot.send_message(m.chat.id, welcome_msg, parse_mode="HTML", reply_markup=markup)
+
+@bot.message_handler(commands=['help'])
+def help_command(m):
+    bot.send_message(m.chat.id, "טיפ: ככל שתהיה יותר ספציפי (למשל 'רחפן DJI'), התוצאות יהיו טובות יותר.", parse_mode="HTML")
+
+@bot.message_handler(func=lambda m: "עזרה" in m.text)
+def handle_help_text(m):
+    help_command(m)
+
+@bot.message_handler(func=lambda m: True)
+def handle_text(m):
+    if "חפש לי" not in m.text: 
+        if len(m.text) > 3: bot.reply_to(m, "💡 התחל חיפוש במילים **'חפש לי'**.")
+        return
+
+    user_query = m.text.replace("חפש לי", "").strip()
+    notify_admin(m.from_user, user_query)
+    
+    bot.send_chat_action(m.chat.id, 'typing')
+    loading = bot.send_message(m.chat.id, f"💎 <b>מסנן איכות עבור: {user_query}...</b>", parse_mode="HTML")
+    
+    raw_products, query_en = get_ali_products(user_query)
+    
+    if not raw_products:
+        bot.delete_message(m.chat.id, loading.message_id)
+        bot.send_message(m.chat.id, "❌ לא נמצאו מוצרים.")
+        return
+
+    final_list = filter_with_snob_ai(raw_products, query_en)
+    bot.delete_message(m.chat.id, loading.message_id)
+
+    if not final_list:
+         bot.send_message(m.chat.id, "🔍 לא נמצאו תוצאות שעומדות ברף האיכות.")
+         return
+
+    try:
+        image_urls = [p.get('product_main_image_url') for p in final_list]
+        collage = create_collage(image_urls)
+        bot.send_photo(m.chat.id, collage, caption=f"🏆 <b>הבחירות המובילות: {user_query}</b>", parse_mode="HTML")
+        
+        full_text = ""
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        
+        for i, p in enumerate(final_list):
+            title_he = translate_to_hebrew(p.get('product_title'))
+            price = float(p.get('target_sale_price', 0))
+            orig_price = float(p.get('target_original_price', 0))
+            
+            discount_txt = ""
+            if orig_price > price:
+                percent = int(((orig_price - price) / orig_price) * 100)
+                discount_txt = f" | 📉 <b>{percent}% הנחה</b>"
+            
+            link = get_short_link(p.get('product_detail_url'))
+            
+            full_text += f"{i+1}. 🏅 <b>{title_he[:55]}...</b>\n"
+            full_text += f"💰 מחיר: <b>{price}₪</b>{discount_txt}\n"
+            full_text += f"🔗 {link}\n\n"
+            
+            btn = types.InlineKeyboardButton(text=f"🛍️ לרכישת מוצר {i+1}", url=link)
+            markup.add(btn)
+            
+        full_text += "💎 <b>DrDeals Premium Selection</b>"
+        bot.send_message(m.chat.id, full_text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
+        
+    except Exception as e:
+        bot.send_message(m.chat.id, f"שגיאה: {e}")
+
+bot.infinity_polling()
