@@ -25,7 +25,7 @@ TRACKING_ID = "DrDeals"
 
 print("🔄 מתחבר לטלגרם...")
 bot = telebot.TeleBot(BOT_TOKEN)
-print("✅ הבוט מחובר - גרסה קלאסית יציבה")
+print("✅ הבוט מחובר - גרסת סורק יציבה + הנחות")
 
 class FreeSmartEngine:
     def __init__(self):
@@ -47,25 +47,34 @@ class FreeSmartEngine:
         except:
             return user_query
 
-    def _parse_sales(self, p):
-        """חילוץ מכירות באמצעות Regex (הגרסה שעבדה)"""
-        keys_to_check = ['last_volume', 'sale_volume', 'app_sale_volume', 'orders', 'volume', 'sales']
-        for key in keys_to_check:
-            val = p.get(key)
-            if not val: continue
-            val_str = str(val).lower()
-            if val_str == '0': continue
+    def _extract_number(self, val):
+        """פונקציית עזר לחילוץ מספרים"""
+        try:
+            val_str = str(val).lower().replace(',', '').replace('+', '').strip()
+            if not val_str or val_str == '0': return 0
             
-            try:
-                match = re.search(r'(\d+(?:\.\d+)?)', val_str)
-                if not match: continue
-                num = float(match.group(1))
-                if 'k' in val_str: num *= 1000
-                elif 'w' in val_str: num *= 10000
-                elif 'm' in val_str: num *= 1000000
-                if num > 0: return int(num)
-            except: continue
-        return 0
+            match = re.search(r'(\d+(?:\.\d+)?)', val_str)
+            if not match: return 0
+            
+            num = float(match.group(1))
+            if 'k' in val_str: num *= 1000
+            elif 'm' in val_str: num *= 1000000
+            elif 'w' in val_str: num *= 10000
+            
+            return int(num)
+        except:
+            return 0
+
+    def _parse_sales(self, p):
+        """הסורק האוניברסלי - למכירות"""
+        best_sales = 0
+        for key, val in p.items():
+            k_str = str(key).lower()
+            if any(x in k_str for x in ['volume', 'sold', 'sales', 'order']) and 'price' not in k_str and 'currency' not in k_str:
+                current_sales = self._extract_number(val)
+                if current_sales > best_sales:
+                    best_sales = current_sales
+        return best_sales
 
     def search(self, original_query):
         print(f"🔎 מחפש: {original_query}")
@@ -106,9 +115,22 @@ class FreeSmartEngine:
                     try: title_he = GoogleTranslator(source='auto', target='iw').translate(p['product_title'])
                     except: title_he = p['product_title']
 
+                    # --- חישוב הנחה ---
+                    try: price = float(p.get('target_sale_price', 0))
+                    except: price = 0
+                    
+                    try: orig_price = float(p.get('target_original_price', 0))
+                    except: orig_price = 0
+                    
+                    discount = 0
+                    if orig_price > price and price > 0:
+                        discount = int(round((1 - (price / orig_price)) * 100))
+
                     parsed_products.append({
                         "title": title_he[:85],
-                        "price": p.get('target_sale_price', 'N/A'),
+                        "price": price, # שומרים כמספר לחישובים
+                        "orig_price": orig_price,
+                        "discount": discount,
                         "image": p.get('product_main_image_url'),
                         "raw_url": p.get('product_detail_url', ''),
                         "rating": round(rating, 1),
@@ -116,7 +138,7 @@ class FreeSmartEngine:
                     })
                 except: continue
 
-            # מדרג איכות קלאסי (לפי שילוב דירוג ומכירות)
+            # מדרג איכות בסיסי
             premium = [p for p in parsed_products if p['rating'] >= 4.7 and p['sales'] >= 10]
             if len(premium) >= 2:
                 premium.sort(key=lambda x: x['sales'], reverse=True)
@@ -222,6 +244,11 @@ def handle_message(message):
             text_msg += f"{i+1}. 🏆 <b>{html.escape(p['title'])}</b>\n"
             text_msg += f"💰 מחיר: <b>{p['price']}₪</b> | ⭐ דירוג: <b>{p['rating']}</b>\n"
             
+            # --- תוספת: הצגת ההנחה ---
+            if p['discount'] > 0:
+                 text_msg += f"📉 <b>{p['discount']}% הנחה!</b> (במקום {p['orig_price']}₪)\n"
+            # --------------------------
+
             if p['sales'] > 0:
                 text_msg += f"🔥 נחטף ע''י: <b>{p['sales']}+ רוכשים</b>\n"
             else:
