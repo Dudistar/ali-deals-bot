@@ -5,11 +5,12 @@ import re
 import os
 import io
 import hashlib
+import html
 import google.generativeai as genai
 from telebot import types
 from PIL import Image, ImageDraw
 
-# נסה לייבא תרגום
+# ניסיון לייבא תרגום
 try:
     from deep_translator import GoogleTranslator
 except ImportError:
@@ -25,14 +26,14 @@ TRACKING_ID = "DrDeals"
 GEMINI_API_KEY = "AIzaSyDNkixE64pO0muWxcqD2qtwZbTiH9UHT7w"
 ADMIN_ID = 173837076
 
-# חיבור ל-AI (מודל יציב)
+# חיבור ל-AI (מודל יציב שעובד בטוח)
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-pro')
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
 # ==========================================
-# פונקציות ליבה
+# פונקציות ליבה (מנוע)
 # ==========================================
 
 def generate_sign(params):
@@ -40,7 +41,7 @@ def generate_sign(params):
     return hashlib.md5(s.encode('utf-8')).hexdigest().upper()
 
 def get_short_link(raw_url):
-    # יצירת לינק מקוצר ונקי
+    # פונקציה ליצירת לינק מקוצר ונקי
     clean_url = raw_url.split('?')[0]
     try:
         params = {
@@ -57,6 +58,7 @@ def get_short_link(raw_url):
     return clean_url
 
 def create_collage(image_urls):
+    # יצירת קולאז' תמונות יפה
     images = []
     for url in image_urls[:4]:
         try:
@@ -77,7 +79,6 @@ def create_collage(image_urls):
             x, y = positions[i]
             # עיגול צהוב עם מספר
             draw.ellipse((x+20, y+20, x+70, y+70), fill="#FFD700", outline="black", width=2)
-            # תיקון מרכוז המספר
             draw.text((x+38, y+30), str(i+1), fill="black", font_size=40)
             
     output = io.BytesIO()
@@ -86,7 +87,7 @@ def create_collage(image_urls):
     return output
 
 def get_products_from_ali(query):
-    # תרגום לאנגלית לחיפוש
+    # תרגום לאנגלית לחיפוש (המנוע של אליאקספרס עובד טוב יותר באנגלית)
     try:
         query_en = GoogleTranslator(source='auto', target='en').translate(query).lower()
     except:
@@ -116,7 +117,7 @@ def filter_with_ai(products, user_query):
     # בניית רשימה ל-AI
     text_list = "\n".join([f"ID {i}: {p['product_title']} (Price: {p['target_sale_price']})" for i, p in enumerate(products)])
     
-    # ההוראה הקשוחה ל-AI
+    # ההוראה ל-AI: תהיה קשוח ותעיף זבל
     prompt = f"""
     User search: "{user_query}"
     Task: Select ONLY the main product requested.
@@ -139,7 +140,6 @@ def filter_with_ai(products, user_query):
         clean_list = [products[i] for i in ids if i < len(products)]
         return clean_list
     except Exception as e:
-        # במקרה של שגיאה ב-AI, נחזיר רשימה ריקה כדי שהקוד ידע להשתמש בגיבוי
         print(f"AI Error: {e}")
         return []
 
@@ -149,7 +149,6 @@ def filter_with_ai(products, user_query):
 
 @bot.message_handler(commands=['start'])
 def start(m):
-    # הודעת פתיחה יפה
     welcome_text = (
         "👋 <b>ברוכים הבאים ל-DrDeals!</b>\n"
         "הבוט החכם שמשלב AI כדי למצוא לכם את הדילים הכי טובים.\n\n"
@@ -157,7 +156,6 @@ def start(m):
     )
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add("חפש לי רחפן", "חפש לי אוזניות", "חפש לי שעון חכם", "חפש לי מצלמה")
-    
     bot.send_message(m.chat.id, welcome_text, parse_mode="HTML", reply_markup=markup)
 
 @bot.message_handler(func=lambda m: True)
@@ -165,7 +163,6 @@ def handle(m):
     if "חפש לי" not in m.text: return
     query = m.text.replace("חפש לי", "").strip()
     
-    # הודעת "מקליד..."
     bot.send_chat_action(m.chat.id, 'typing')
     loading = bot.send_message(m.chat.id, f"🤖 <b>ה-AI מנתח מוצרים עבור: {query}...</b>", parse_mode="HTML")
     
@@ -180,16 +177,15 @@ def handle(m):
     # 2. סינון AI
     final_products = filter_with_ai(raw_products, query_en)
     
-    # אם ה-AI החמיר מדי או נכשל, ניקח את ה-4 הראשונים עם הכי הרבה מכירות כגיבוי
+    # גיבוי: אם ה-AI נכשל או החמיר מדי, קח את ה-4 הנמכרים ביותר
     if not final_products:
          final_products = raw_products[:4]
     
-    # לוקחים רק את ה-4 הכי טובים מהסינון
+    # לוקחים רק את ה-4 הכי טובים
     final_products = final_products[:4]
-    
     bot.delete_message(m.chat.id, loading.message_id)
 
-    # 3. בניית ההודעה המושקעת
+    # 3. בניית ההודעה המושקעת (עם HTML, עברית וכפתורים)
     try:
         # קולאז'
         image_urls = [p.get('product_main_image_url') for p in final_products]
@@ -197,13 +193,13 @@ def handle(m):
         
         bot.send_photo(m.chat.id, collage, caption=f"💎 <b>נבחרת הדילים: {query}</b>", parse_mode="HTML")
         
-        # טקסט מפורט עם כפתורים
+        # טקסט מפורט
         msg_text = ""
         buttons = []
-        markup = types.InlineKeyboardMarkup(row_width=1) # כפתור אחד מתחת לשני
+        markup = types.InlineKeyboardMarkup(row_width=1)
 
         for i, p in enumerate(final_products):
-            # עיבוד נתונים
+            # תרגום כותרת לעברית
             title_orig = p.get('product_title')
             try: title_he = GoogleTranslator(source='auto', target='iw').translate(title_orig)
             except: title_he = title_orig
@@ -218,25 +214,22 @@ def handle(m):
                 o_float = float(orig_price)
                 if o_float > p_float:
                     d = int(((o_float - p_float) / o_float) * 100)
-                    discount_str = f"\n📉 <b>{d}% הנחה!</b> (במקום {orig_price}₪)"
+                    discount_str = f" | 📉 <b>{d}% הנחה!</b>"
             except: pass
-            
-            sales = p.get('lastest_volume', 0) # נסיון למשוך מכירות בצורה שונה לפעמים
             
             short_link = get_short_link(p.get('product_detail_url'))
             
-            # בניית הבלוק למוצר
-            msg_text += f"{i+1}. 🏆 <b>{title_he[:60]}...</b>\n"
+            # בניית שורה למוצר
+            msg_text += f"{i+1}. 🏆 <b>{html.escape(title_he[:55])}...</b>\n"
             msg_text += f"💰 מחיר: <b>{price}₪</b>{discount_str}\n"
-            msg_text += f"🔗 <a href='{short_link}'>לחץ כאן לפרטים ורכישה</a>\n\n"
+            msg_text += f"🔗 <a href='{short_link}'>לחץ לפרטים נוספים</a>\n\n"
             
-            # הוספת כפתור
-            btn_text = f"🎁 לקנייה (מוצר {i+1})"
-            buttons.append(types.InlineKeyboardButton(text=btn_text, url=short_link))
+            # כפתור
+            buttons.append(types.InlineKeyboardButton(text=f"🎁 לקנייה (מוצר {i+1})", url=short_link))
 
         msg_text += "🛍️ <b>קנייה מהנה! | DrDeals</b>"
         
-        # הוספת הכפתורים להודעה
+        # הוספת הכפתורים
         for btn in buttons:
             markup.add(btn)
 
