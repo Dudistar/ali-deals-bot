@@ -14,7 +14,7 @@ try:
     from deep_translator import GoogleTranslator
 except ImportError:
     print("❌ שגיאה: ספריית deep_translator חסרה!")
-    # בריילוואי זה לא יעצור את הריצה, אבל כדאי לוודא שזה ב-requirements.txt
+    # בריילוואי זה לא יעצור את הריצה אם זה ב-requirements.txt
     pass
 
 # ==========================================
@@ -50,24 +50,45 @@ class FreeSmartEngine:
             return user_query
 
     def _parse_sales(self, p):
-        # ניסיון אגרסיבי לחילוץ
-        keys_to_check = ['last_volume', 'sale_volume', 'app_sale_volume', 'orders', 'volume', 'sales']
-        for key in keys_to_check:
-            val = p.get(key)
-            if not val: continue
-            val_str = str(val).lower()
-            if val_str == '0': continue
+        """פונקציה חכמה שסורקת את כל השדות בחיפוש אחר מכירות"""
+        best_sales = 0
+        
+        # עוברים על כל המפתחות והערכים במוצר
+        for key, val in p.items():
+            k_str = str(key).lower()
             
-            try:
-                match = re.search(r'(\d+(?:\.\d+)?)', val_str)
-                if not match: continue
-                num = float(match.group(1))
-                if 'k' in val_str: num *= 1000
-                elif 'w' in val_str: num *= 10000
-                elif 'm' in val_str: num *= 1000000
-                if num > 0: return int(num)
-            except: continue
-        return 0
+            # אם המפתח מכיל מילים כמו volume/sold/orders אבל לא price (כדי לא לקחת מחיר)
+            if any(x in k_str for x in ['volume', 'sold', 'sales', 'order']) and 'price' not in k_str:
+                
+                # ניסיון חילוץ מספר מהערך
+                current_sales = self._extract_number(val)
+                
+                # אנחנו רוצים את המספר הגדול ביותר שנמצא (למשל, כדי לא לקחת בטעות '0' משדה משני)
+                if current_sales > best_sales:
+                    best_sales = current_sales
+                    
+        return best_sales
+
+    def _extract_number(self, val):
+        """חילוץ מספר נקי מטקסט כולל k/m"""
+        try:
+            val_str = str(val).lower()
+            if not val_str or val_str == '0': return 0
+            
+            # regex למציאת מספר (כולל נקודה עשרונית)
+            match = re.search(r'(\d+(?:\.\d+)?)', val_str)
+            if not match: return 0
+            
+            num = float(match.group(1))
+            
+            # הכפלה לפי סיומות
+            if 'k' in val_str: num *= 1000
+            elif 'm' in val_str: num *= 1000000
+            elif 'w' in val_str: num *= 10000 # סיומת סינית נפוצה
+            
+            return int(num)
+        except:
+            return 0
 
     def search(self, original_query):
         print(f"🔎 מחפש: {original_query}")
@@ -97,21 +118,12 @@ class FreeSmartEngine:
             if not products_raw: return []
             if isinstance(products_raw, dict): products_raw = [products_raw]
 
-            # ======================================================
-            # מלשין ה-LOGS - מדפיס את המידע הגולמי לריילוואי
-            # ======================================================
-            if len(products_raw) > 0:
-                print("\n" + "="*40)
-                print("🔥🔥🔥 DEBUG RAW DATA (FIRST PRODUCT) 🔥🔥🔥")
-                # מדפיס את כל המידע שיש על המוצר הראשון כדי שנראה איפה המכירות מסתתרות
-                print(json.dumps(products_raw[0], indent=4, ensure_ascii=False))
-                print("="*40 + "\n")
-            # ======================================================
-
             parsed_products = []
             for p in products_raw:
                 try:
+                    # שימוש בפונקציה החדשה
                     sales = self._parse_sales(p)
+                    
                     rate_str = str(p.get('evaluate_rate', '0')).replace('%', '')
                     rating = float(rate_str) / 20 if rate_str else 0.0
                     try: title_he = GoogleTranslator(source='auto', target='iw').translate(p['product_title'])
@@ -181,7 +193,6 @@ def create_collage(image_urls):
     collage = Image.new('RGB', (1000, 1000), 'white')
     positions, draw = [(0,0), (500,0), (0,500), (500,500)], ImageDraw.Draw(collage)
     
-    # פונקציית עזר לציור המספרים (מוטמעת כאן)
     def draw_num(d, cx, cy, num):
         d.ellipse((cx, cy, cx+35, cy+35), fill="#FFD700", outline="black", width=2)
         bx, by = cx + 13, cy + 7
@@ -230,10 +241,19 @@ def handle_message(message):
         
         for i, p in enumerate(products):
             short_url = links[i]
+            
+            # --- עיצוב מנצח ---
+            text_msg += f"{i+1}. 🏆 <b>{html.escape(p['title'])}</b>\n"
+            text_msg += f"💰 מחיר: <b>{p['price']}₪</b> | ⭐ דירוג: <b>{p['rating']}</b>\n"
+            
             if p['sales'] > 0:
-                text_msg += f"{i+1}. 🏆 <b>{html.escape(p['title'])}</b>\n💰 <b>{p['price']}₪</b> | ⭐ {p['rating']} | 🔥 <b>{p['sales']}+ נמכרו</b>\n🔗 {short_url}\n\n"
+                text_msg += f"🔥 נחטף ע''י: <b>{p['sales']}+ רוכשים</b>\n"
             else:
-                text_msg += f"{i+1}. 🏆 <b>{html.escape(p['title'])}</b>\n💰 <b>{p['price']}₪</b> | ⭐ {p['rating']} | ✨ <b>מומלץ!</b>\n🔗 {short_url}\n\n"
+                text_msg += f"✨ <b>פריט מבוקש ומומלץ</b>\n"
+                
+            text_msg += f"🚚 <b>משלוח מהיר / Choice</b>\n"
+            text_msg += f"🔗 {short_url}\n\n"
+            
             buttons.append(types.InlineKeyboardButton(text=f"🎁 לקנייה {i+1}", url=short_url))
 
         text_msg += "—" * 12 + "\n🛍️ <b>קנייה מהנה! | DrDeals</b>"
