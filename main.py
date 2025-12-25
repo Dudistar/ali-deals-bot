@@ -16,7 +16,7 @@ except ImportError:
     pass
 
 # ==========================================
-# הגדרות
+# הגדרות מערכת
 # ==========================================
 BOT_TOKEN = "8575064945:AAH_2WmHMH25TMFvt4FM6OWwfqFcDAaqCPw"
 APP_KEY = "523460"
@@ -190,12 +190,15 @@ def start(m):
     notify_admin(m.from_user, "לחץ START")
     
     welcome_msg = (
-        "👋 <b>ברוכים הבאים ל-DrDeals Premium!</b> 💎\n\n"
-        "הבוט שעושה סדר באליאקספרס.\n"
-        "אני משתמש באלגוריתם 'גיליוטינה' 🪓 כדי לחתוך את כל הזיופים והצעצועים הזולים,\n"
-        "ומשאיר לכם רק ציוד איכותי.\n\n"
-        "👇 <b>נסה אותי עכשיו:</b>"
+        "✨ <b>ברוכים הבאים ל-DrDeals Premium</b> | חווית קניות חכמה 💎\n\n"
+        "נעים להכיר, אני העוזר האישי שלכם לאליאקספרס.\n"
+        "המטרה שלי: לחסוך לכם חיפושים מייגעים ולהגן עליכם ממוצרים ירודים.\n\n"
+        "🧠 <b>איך זה עובד?</b>\n"
+        "פשוט בקשו ממני למצוא מוצר באמצעות המילים <b>'חפש לי'</b>.\n"
+        "ה-AI שלי יסרוק, יסנן ויגיש לכם רק את הטובים ביותר.\n\n"
+        "👇 <b>נסו אותי עכשיו:</b>"
     )
+    
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add("חפש לי רחפן", "חפש לי אוזניות", "חפש לי שעון חכם", "❓ עזרה וטיפים")
     
@@ -210,7 +213,16 @@ def start(m):
 
 @bot.message_handler(commands=['help'])
 def help_command(m):
-    bot.send_message(m.chat.id, "טיפ: ככל שתהיה יותר ספציפי (למשל 'רחפן DJI'), התוצאות יהיו טובות יותר.", parse_mode="HTML")
+    # החזרתי את ההנחיה המפורשת כאן
+    help_text = (
+        "💎 <b>מדריך לחיפוש איכותי</b>\n\n"
+        "כדי שאוכל למצוא עבורכם את הטוב ביותר, אנא הקפידו על הפורמט הבא:\n\n"
+        "✅ <b>כתבו 'חפש לי' ואז את שם המוצר:</b>\n"
+        "• 'חפש לי מצלמה לרכב שיאומי'\n"
+        "• 'חפש לי שעון חכם עמיד למים'\n\n"
+        "💡 <b>שימו לב:</b> אני משתמש בסינון איכות קפדני. מוצרים זולים באופן חשוד יסוננו אוטומטית."
+    )
+    bot.send_message(m.chat.id, help_text, parse_mode="HTML")
 
 @bot.message_handler(func=lambda m: "עזרה" in m.text)
 def handle_help_text(m):
@@ -218,34 +230,35 @@ def handle_help_text(m):
 
 @bot.message_handler(func=lambda m: True)
 def handle_text(m):
+    # בדיקה שהמשתמש באמת כתב "חפש לי"
     if "חפש לי" not in m.text: 
-        if len(m.text) > 3: bot.reply_to(m, "💡 התחל חיפוש במילים **'חפש לי'**.")
+        if len(m.text) > 3: bot.reply_to(m, "💡 כדי להתחיל חיפוש, אנא התחילו את המשפט במילים **'חפש לי'**.")
         return
 
     user_query = m.text.replace("חפש לי", "").strip()
     notify_admin(m.from_user, user_query)
     
     bot.send_chat_action(m.chat.id, 'typing')
-    loading = bot.send_message(m.chat.id, f"💎 <b>מסנן איכות עבור: {user_query}...</b>", parse_mode="HTML")
+    loading = bot.send_message(m.chat.id, f"💎 <b>מאתר את האפשרויות הטובות ביותר עבור: {user_query}...</b>", parse_mode="HTML")
     
     raw_products, query_en = get_ali_products(user_query)
     
     if not raw_products:
         bot.delete_message(m.chat.id, loading.message_id)
-        bot.send_message(m.chat.id, "❌ לא נמצאו מוצרים.")
+        bot.send_message(m.chat.id, "❌ לא נמצאו מוצרים התואמים את סטנדרט האיכות שלנו.")
         return
 
     final_list = filter_with_snob_ai(raw_products, query_en)
     bot.delete_message(m.chat.id, loading.message_id)
 
     if not final_list:
-         bot.send_message(m.chat.id, "🔍 לא נמצאו תוצאות שעומדות ברף האיכות.")
+         bot.send_message(m.chat.id, "🔍 החיפוש הסתיים, אך לא נמצאו מוצרים שעומדים ברף האיכות הנדרש.")
          return
 
     try:
         image_urls = [p.get('product_main_image_url') for p in final_list]
         collage = create_collage(image_urls)
-        bot.send_photo(m.chat.id, collage, caption=f"🏆 <b>הבחירות המובילות: {user_query}</b>", parse_mode="HTML")
+        bot.send_photo(m.chat.id, collage, caption=f"🏆 <b>הבחירות המובילות עבורך: {user_query}</b>", parse_mode="HTML")
         
         full_text = ""
         markup = types.InlineKeyboardMarkup(row_width=1)
@@ -266,7 +279,7 @@ def handle_text(m):
             full_text += f"💰 מחיר: <b>{price}₪</b>{discount_txt}\n"
             full_text += f"🔗 {link}\n\n"
             
-            btn = types.InlineKeyboardButton(text=f"🛍️ לרכישת מוצר {i+1}", url=link)
+            btn = types.InlineKeyboardButton(text=f"🛍️ לרכישת המומלץ מס' {i+1}", url=link)
             markup.add(btn)
             
         full_text += "💎 <b>DrDeals Premium Selection</b>"
