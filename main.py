@@ -1,4 +1,3 @@
-
 import telebot
 import requests
 import io
@@ -8,16 +7,17 @@ import html
 import json
 from telebot import types
 from PIL import Image, ImageDraw
+
+# בדיקה שספריית התרגום קיימת
 try:
     from deep_translator import GoogleTranslator
 except ImportError:
     print("❌ שגיאה: ספריית deep_translator חסרה!")
     print("אנא הרץ בטרמינל: pip install deep-translator")
-    input("לחץ אנטר ליציאה...")
     exit()
 
 # ==========================================
-# הפרטים האישיים שלך (לא נגעתי בהם!)
+# הגדרות ופרטים אישיים (שלך)
 # ==========================================
 BOT_TOKEN = "8575064945:AAH_2WmHMH25TMFvt4FM6OWwfqFcDAaqCPw"
 APP_KEY = "523460"
@@ -25,15 +25,11 @@ APP_SECRET = "Co7bNfYfqlu8KTdj2asXQV78oziICQEs"
 TRACKING_ID = "DrDeals"
 
 print("🔄 מתחבר לטלגרם...")
-try:
-    bot = telebot.TeleBot(BOT_TOKEN)
-    print("✅ מחובר בהצלחה! הבוט מאזין...")
-except Exception as e:
-    print(f"❌ שגיאה בהתחברות לבוט: {e}")
-    exit()
+bot = telebot.TeleBot(BOT_TOKEN)
+print("✅ הבוט מחובר ומוכן לעבודה!")
 
 # ==============================================================================
-#  המנוע החכם - גרסת Debug (בודק למה אין תוצאות)
+#  המנוע החכם (הלוגיקה שעובדת)
 # ==============================================================================
 
 class FreeSmartEngine:
@@ -66,9 +62,7 @@ class FreeSmartEngine:
             return user_query
 
     def search(self, original_query):
-        print("\n" + "-"*30)
         print(f"🔎 מחפש: {original_query}")
-        
         smart_keywords = self._enhance_query(original_query)
         
         params = {
@@ -88,23 +82,12 @@ class FreeSmartEngine:
         params['sign'] = generate_sign(params)
         
         try:
-            print("⏳ שולח בקשה ל-AliExpress...")
             resp = requests.post("https://api-sg.aliexpress.com/sync", data=params, timeout=15).json()
-            
-            if 'error_response' in resp:
-                print(f"❌ שגיאת API: {resp['error_response']}")
-                return []
-            
             data = resp.get('aliexpress_affiliate_product_query_response', {}).get('resp_result', {}).get('result', {})
             products_raw = data.get('products', {}).get('product', [])
             
-            if not products_raw:
-                print("⚠️ ה-API החזיר 0 מוצרים.")
-                return []
-            
+            if not products_raw: return []
             if isinstance(products_raw, dict): products_raw = [products_raw]
-
-            print(f"📦 התקבלו {len(products_raw)} מוצרים. מסנן...")
 
             parsed_products = []
             for p in products_raw:
@@ -113,8 +96,12 @@ class FreeSmartEngine:
                     rate_str = str(p.get('evaluate_rate', '0')).replace('%', '')
                     rating = float(rate_str) / 20 if rate_str else 0.0
                     
+                    # תרגום כותרת לעברית לתצוגה יפה
+                    try: title_he = GoogleTranslator(source='auto', target='iw').translate(p['product_title'])
+                    except: title_he = p['product_title']
+
                     parsed_products.append({
-                        "title": p['product_title'],
+                        "title": title_he[:85], # החזרנו את אורך הכותרת המקורי
                         "price": p.get('target_sale_price', 'N/A'),
                         "image": p.get('product_main_image_url'),
                         "raw_url": p.get('product_detail_url', ''),
@@ -144,7 +131,7 @@ class FreeSmartEngine:
 engine = FreeSmartEngine()
 
 # ==============================================================================
-#  פונקציות עזר (חתימה, קיצור, תמונה)
+#  פונקציות עזר ועיצוב (החזרתי את העיצוב המקורי שלך!)
 # ==============================================================================
 
 def generate_sign(params):
@@ -167,6 +154,21 @@ def get_short_link(raw_url):
     except: pass
     return clean_url
 
+# החזרתי את הפונקציה המקורית שלך לציור מספרים!
+def draw_small_number(draw, cx, cy, num):
+    draw.ellipse((cx, cy, cx+35, cy+35), fill="#FFD700", outline="black", width=2)
+    bx, by = cx + 13, cy + 7
+    if num == 1: draw.rectangle([bx+2, by, bx+6, by+22], fill="black")
+    elif num == 2:
+        for r in [[0,0,10,3],[8,0,10,12],[0,10,10,13],[0,12,3,25],[0,22,10,25]]:
+            draw.rectangle([bx+r[0], by+r[1], bx+r[2], by+r[3]], fill="black")
+    elif num == 3:
+        for r in [[0,0,10,3],[8,0,10,25],[0,10,10,13],[0,22,10,25]]:
+            draw.rectangle([bx+r[0], by+r[1], bx+r[2], by+r[3]], fill="black")
+    elif num == 4:
+        for r in [[0,0,3,12],[0,10,15,13],[8,0,10,20]]:
+            draw.rectangle([bx+r[0], by+r[1], bx+r[2], by+r[3]], fill="black")
+
 def create_collage(image_urls):
     images = []
     for url in image_urls:
@@ -176,18 +178,25 @@ def create_collage(image_urls):
             images.append(img)
         except: images.append(Image.new('RGB', (500,500), color='#FFFFFF'))
     
+    # השלמה ל-4 תמונות אם חסר
     while len(images) < 4: images.append(Image.new('RGB', (500,500), color='#FFFFFF'))
-    collage = Image.new('RGB', (1000, 1000), 'white')
-    positions = [(0,0), (500,0), (0,500), (500,500)]
-    for i, img in enumerate(images[:4]): collage.paste(img, positions[i])
     
+    collage = Image.new('RGB', (1000, 1000), 'white')
+    positions, draw = [(0,0), (500,0), (0,500), (500,500)], ImageDraw.Draw(collage)
+    
+    for i, img in enumerate(images[:4]):
+        collage.paste(img, positions[i])
+        # ציור המספר רק אם יש מוצר אמיתי במיקום הזה
+        if i < len(image_urls):
+            draw_small_number(draw, positions[i][0]+15, positions[i][1]+15, i+1)
+            
     output = io.BytesIO()
-    collage.save(output, format='JPEG', quality=85)
+    collage.save(output, format='JPEG', quality=95)
     output.seek(0)
     return output
 
 # ==============================================================================
-#  טלגרם הנדלר
+#  טלגרם הנדלר - עם הטקסט והעיצוב המקוריים
 # ==============================================================================
 
 @bot.message_handler(func=lambda message: True)
@@ -197,12 +206,12 @@ def handle_message(message):
         if not query.lower().startswith("חפש לי"): return
         search_query = query[7:].strip()
         
-        loading = bot.send_message(message.chat.id, f"🔍 מחפש: {search_query}...")
+        loading = bot.send_message(message.chat.id, f"🔍 <b>סורק את הרשת עבור: {search_query}...</b>", parse_mode="HTML")
         
         products = engine.search(search_query)
         
         if not products:
-            bot.edit_message_text("❌ לא נמצאו תוצאות.", message.chat.id, loading.message_id)
+            bot.edit_message_text("❌ לא מצאתי תוצאות איכותיות. נסה חיפוש אחר.", message.chat.id, loading.message_id)
             return
 
         links = []
@@ -211,17 +220,31 @@ def handle_message(message):
         collage = create_collage([p['image'] for p in products])
         bot.delete_message(message.chat.id, loading.message_id)
         
-        caption = f"תוצאות עבור: {search_query}"
-        bot.send_photo(message.chat.id, collage, caption=caption)
+        # כותרת ההודעה
+        bot.send_photo(message.chat.id, collage, caption=f"🎯 <b>הדילים הכי טובים ל-{search_query}:</b>", parse_mode="HTML")
 
-        text_msg = "💎 התוצאות:\n\n"
-        markup = types.InlineKeyboardMarkup(row_width=1)
+        # תוכן ההודעה המושקע (כמו בקוד המקורי שלך)
+        text_msg = "💎 <b>נבחרת הדילים של DrDeals</b>\n" + "—" * 12 + "\n\n"
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        buttons = []
         
         for i, p in enumerate(products):
-            text_msg += f"{i+1}. {p['title'][:40]}...\n💵 {p['price']}₪ | ⭐ {p['rating']}\n\n"
-            markup.add(types.InlineKeyboardButton(f"לקנייה ({p['price']}₪)", url=links[i]))
+            short_url = links[i]
+            
+            # עיצוב טקסט עשיר
+            text_msg += f"{i+1}. 🏆 <b>{html.escape(p['title'])}</b>\n"
+            text_msg += f"💰 מחיר: <b>{p['price']}₪</b> | ⭐ דירוג: <b>{p['rating']}</b>\n"
+            text_msg += f"🔥 נרכש ע''י <b>{p['sales']}</b> אנשים\n"
+            text_msg += f"🚚 <b>משלוח מהיר / Choice</b>\n"
+            text_msg += f"🔗 {short_url}\n\n"
+            
+            # כפתורים מעוצבים
+            buttons.append(types.InlineKeyboardButton(text=f"🎁 לקנייה {i+1}", url=short_url))
 
-        bot.send_message(message.chat.id, text_msg, reply_markup=markup)
+        text_msg += "—" * 12 + "\n🛍️ <b>קנייה מהנה! | DrDeals</b>"
+        markup.add(*buttons)
+        
+        bot.send_message(message.chat.id, text_msg, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
         
     except Exception as e:
         print(f"Error: {e}")
