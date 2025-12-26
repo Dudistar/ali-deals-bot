@@ -5,7 +5,6 @@ import re
 import os
 import io
 import hashlib
-import statistics
 from telebot import types
 from PIL import Image, ImageDraw
 
@@ -17,13 +16,55 @@ APP_KEY = "523460"
 APP_SECRET = "Co7bNfYfqlu8KTdj2asXQV78oziICQEs"
 TRACKING_ID = "DrDeals"
 ADMIN_ID = 173837076
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+
+# הגדרת ה-AI (הבלש)
+HAS_GEMINI = False
+if GEMINI_API_KEY:
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=GEMINI_API_KEY)
+        model = genai.GenerativeModel('gemini-pro')
+        HAS_GEMINI = True
+    except: pass
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
 # ==========================================
-# פונקציות בטוחות
+# 🧠 שלב 1: הבלש (Smart Query Optimizer)
 # ==========================================
+def smart_query_optimizer(user_text):
+    """
+    הבלש: הופך עברית משובשת לאנגלית טכנית מדויקת
+    """
+    # נסיון 1: שימוש ב-AI כדי להבין כוונה
+    if HAS_GEMINI:
+        try:
+            prompt = f"""
+            Task: Convert Hebrew search to English Keywords for AliExpress.
+            Input: "{user_text}"
+            Rules:
+            1. Output ONLY the English product name.
+            2. Remove polite words ("I want", "find", "buy").
+            3. BRAND FIX: If user says model (e.g. "S24"), ADD brand ("Samsung").
+            4. If user says "Buds", ADD "Headphones".
+            Output format: Keywords only.
+            """
+            response = model.generate_content(prompt)
+            if response.text:
+                return response.text.strip().replace('"', '')
+        except: pass
 
+    # נסיון 2: תרגום רגיל (גיבוי)
+    try:
+        from deep_translator import GoogleTranslator
+        return GoogleTranslator(source='auto', target='en').translate(user_text)
+    except:
+        return user_text
+
+# ==========================================
+# פונקציות עזר בטוחות
+# ==========================================
 def safe_float(value):
     try:
         if not value: return 0.0
@@ -43,23 +84,16 @@ def translate_to_hebrew(text):
         return GoogleTranslator(source='auto', target='iw').translate(text)
     except: return text
 
-def translate_to_english(text):
-    try:
-        from deep_translator import GoogleTranslator
-        return GoogleTranslator(source='auto', target='en').translate(text)
-    except: return text
-
 # ==========================================
-# שליפת מוצרים
+# 2. שליפת מוצרים
 # ==========================================
-def get_ali_products(query):
-    query_en = translate_to_english(query)
+def get_ali_products(cleaned_query):
     
     params = {
         'app_key': APP_KEY, 'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
         'sign_method': 'md5', 'method': 'aliexpress.affiliate.product.query',
         'partner_id': 'top-autopilot', 'format': 'json', 'v': '2.0',
-        'keywords': query_en, 
+        'keywords': cleaned_query, 
         'target_currency': 'ILS', 'ship_to_country': 'IL',
         'sort': 'LAST_VOLUME_DESC', 
         'page_size': '50', 
@@ -74,42 +108,30 @@ def get_ali_products(query):
     except: return []
 
 # ==========================================
-# 🛡️ פונקציות הסינון (בלי הגבלת מחיר!)
+# 3. סינון (בלי הגבלת מחיר!)
 # ==========================================
 def filter_products(products):
     if not products: return []
     
-    # רשימה שחורה רק לזבל אמיתי (ברגים, מדבקות, חלקים פנימיים)
-    # הסרתי את כל חסימות המחיר!
-    blacklist = [
-        "sticker", "decal", "screw", "part", "glass film", "screen protector",
-        "propeller", "landing gear", "motor arm", "battery", "replacement"
-    ]
+    # רשימה שחורה מינימלית (רק זבל טכני מובהק)
+    blacklist = ["sticker", "decal", "screw", "part", "glass film", "screen protector"]
     
     clean = []
-    
     for p in products:
         title = p.get('product_title', '').lower()
-        
-        # 1. בדיקת מילים אסורות (רק זבל טכני)
         if any(bad in title for bad in blacklist): continue
-        
-        # >> כאן היה הסינון מחיר - והוא נמחק! <<
-        
         clean.append(p)
         
-    # אם הסינון מחק את הכל, מחזירים את המקוריים
-    if not clean:
-        products.sort(key=lambda x: safe_float(x.get('target_sale_price', 0)), reverse=True)
-        return products[:4]
-        
-    # מיון לפי מחיר (היקר למעלה) כדי שלפחות הטובים יהיו ראשונים, אבל גם הזולים שם
-    clean.sort(key=lambda x: safe_float(x.get('target_sale_price', 0)), reverse=True)
+    # מיון לפי מחיר (היקר למעלה - כדי שהטובים יופיעו ראשונים)
+    if clean:
+        clean.sort(key=lambda x: safe_float(x.get('target_sale_price', 0)), reverse=True)
+        return clean[:4]
     
-    return clean[:4]
+    # גיבוי אם הכל נמחק
+    return products[:4]
 
 # ==========================================
-# יצירת תמונות ולינקים
+# 4. יצירת לינקים ותמונות
 # ==========================================
 def get_short_link(raw_url):
     if not raw_url: return None
@@ -159,16 +181,20 @@ def create_collage(image_urls):
     except: return None
 
 # ==========================================
-# הבוט עצמו
+# הבוט וההודעות (העיצוב המקורי!)
 # ==========================================
 
 @bot.message_handler(commands=['start'])
 def start(m):
+    # העיצוב היוקרתי המקורי
     welcome_msg = (
-        "✨ <b>ברוכים הבאים ל-DrDeals Premium</b> 💎\n\n"
-        "הבוט שימצא לכם את הדילים השווים ביותר באליאקספרס.\n\n"
-        "👇 <b>כדי להתחיל, כתבו:</b>\n"
-        "'חפש לי' ואת שם המוצר (למשל: 'חפש לי רחפן')"
+        "✨ <b>ברוכים הבאים ל-DrDeals Premium</b> | הדור הבא של הקניות 💎\n\n"
+        "נעים להכיר, אני עוזר הקניות האישי שלכם.\n"
+        "נמאס לכם לקבל מוצרים זולים וחיקויים? גם לי.\n\n"
+        "🧠 <b>איך אני שומר עליכם?</b>\n"
+        "פיתחתי מנוע AI חכם שסורק אלפי מוצרים, מזהה את **האיכותיים ביותר**,\n"
+        "ומסנן עבורכם את כל השאר. אתם תקבלו רק את הטופ של הטופ.\n\n"
+        "👇 <b>מה תרצו לחפש היום? (כתבו 'חפש לי...')</b>"
     )
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add("חפש לי רחפן", "חפש לי אוזניות", "חפש לי שעון חכם", "❓ עזרה וטיפים")
@@ -182,29 +208,45 @@ def start(m):
     except:
         bot.send_message(m.chat.id, welcome_msg, parse_mode="HTML", reply_markup=markup)
 
+@bot.message_handler(commands=['help'])
+def help_command(m):
+    bot.send_message(m.chat.id, "💡 התחילו ב-**'חפש לי'**.", parse_mode="HTML")
+
 @bot.message_handler(func=lambda m: True)
 def handle_text(m):
     if "חפש לי" not in m.text:
         if len(m.text) > 3: bot.reply_to(m, "💡 נא לכתוב **'חפש לי'** לפני שם המוצר.")
         return
 
-    query = m.text.replace("חפש לי", "").strip()
+    raw_query = m.text.replace("חפש לי", "").strip()
     
-    msg = bot.send_message(m.chat.id, f"🔍 <b>מחפש עבור: {query}...</b>", parse_mode="HTML")
+    # הודעת סטטוס דינמית
+    msg = bot.send_message(m.chat.id, f"🔍 <b>הבלש מנתח את הבקשה: {raw_query}...</b>", parse_mode="HTML")
     
-    # 1. שליפה
-    products = get_ali_products(query)
+    # 1. הבלש נכנס לפעולה (תרגום חכם)
+    optimized_query = smart_query_optimizer(raw_query)
     
+    # עדכון סטטוס למשתמש
+    if optimized_query != raw_query:
+        bot.edit_message_text(f"💎 <b>מחפש את הטופ עבור: {optimized_query}...</b>", m.chat.id, msg.message_id, parse_mode="HTML")
+    
+    # 2. שליפה
+    products = get_ali_products(optimized_query)
+    
+    # גיבוי: אם הבלש טעה והחיפוש נכשל, מנסים את המקור
+    if not products:
+        products = get_ali_products(raw_query)
+
     if not products:
         bot.edit_message_text("❌ לא נמצאו מוצרים. נסה חיפוש אחר.", m.chat.id, msg.message_id)
         return
 
-    # 2. סינון (בלי הגבלת מחיר!)
+    # 3. סינון (בלי הגבלת מחיר)
     final_list = filter_products(products)
     
     bot.delete_message(m.chat.id, msg.message_id)
 
-    # 3. בניית התשובה
+    # 4. בניית התשובה המעוצבת
     image_urls = []
     full_text = ""
     markup = types.InlineKeyboardMarkup(row_width=1)
@@ -217,6 +259,7 @@ def handle_text(m):
         
         if not link: continue
         
+        # חישוב אחוזי הנחה (קריטי לעיצוב!)
         discount_txt = ""
         if orig_price > price:
             percent = int(((orig_price - price) / orig_price) * 100)
@@ -224,7 +267,7 @@ def handle_text(m):
 
         image_urls.append(p.get('product_main_image_url'))
         
-        full_text += f"{i+1}. 🏅 <b>{title[:50]}...</b>\n"
+        full_text += f"{i+1}. 🏅 <b>{title[:55]}...</b>\n"
         full_text += f"💰 מחיר: <b>{price}₪</b>{discount_txt}\n"
         full_text += f"🔗 {link}\n\n"
         
@@ -233,7 +276,7 @@ def handle_text(m):
     if image_urls:
         collage = create_collage(image_urls)
         if collage:
-            bot.send_photo(m.chat.id, collage, caption=f"🏆 <b>הבחירות המובילות: {query}</b>", parse_mode="HTML")
+            bot.send_photo(m.chat.id, collage, caption=f"🏆 <b>הבחירות המובילות: {raw_query}</b>", parse_mode="HTML")
     
     full_text += "💎 <b>DrDeals Premium Selection</b>"
     bot.send_message(m.chat.id, full_text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
