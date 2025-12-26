@@ -5,12 +5,18 @@ import re
 import os
 import io
 import hashlib
+import statistics
+import logging
 from telebot import types
 from PIL import Image, ImageDraw
+from requests.adapters import HTTPAdapter
+from requests.packages.urllib3.util.retry import Retry
 
 # ==========================================
-# הגדרות מערכת
+# ⚙️ הגדרות מערכת
 # ==========================================
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
 BOT_TOKEN = "8575064945:AAH_2WmHMH25TMFvt4FM6OWwfqFcDAaqCPw"
 APP_KEY = "523460"
 APP_SECRET = "Co7bNfYfqlu8KTdj2asXQV78oziICQEs"
@@ -18,7 +24,12 @@ TRACKING_ID = "DrDeals"
 ADMIN_ID = 173837076
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-# הגדרת ה-AI (הבלש)
+session = requests.Session()
+retry = Retry(connect=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
+adapter = HTTPAdapter(max_retries=retry)
+session.mount('http://', adapter)
+session.mount('https://', adapter)
+
 HAS_GEMINI = False
 if GEMINI_API_KEY:
     try:
@@ -31,39 +42,7 @@ if GEMINI_API_KEY:
 bot = telebot.TeleBot(BOT_TOKEN)
 
 # ==========================================
-# 🧠 שלב 1: הבלש (Smart Query Optimizer)
-# ==========================================
-def smart_query_optimizer(user_text):
-    """
-    הבלש: הופך עברית משובשת לאנגלית טכנית מדויקת
-    """
-    # נסיון 1: שימוש ב-AI כדי להבין כוונה
-    if HAS_GEMINI:
-        try:
-            prompt = f"""
-            Task: Convert Hebrew search to English Keywords for AliExpress.
-            Input: "{user_text}"
-            Rules:
-            1. Output ONLY the English product name.
-            2. Remove polite words ("I want", "find", "buy").
-            3. BRAND FIX: If user says model (e.g. "S24"), ADD brand ("Samsung").
-            4. If user says "Buds", ADD "Headphones".
-            Output format: Keywords only.
-            """
-            response = model.generate_content(prompt)
-            if response.text:
-                return response.text.strip().replace('"', '')
-        except: pass
-
-    # נסיון 2: תרגום רגיל (גיבוי)
-    try:
-        from deep_translator import GoogleTranslator
-        return GoogleTranslator(source='auto', target='en').translate(user_text)
-    except:
-        return user_text
-
-# ==========================================
-# פונקציות עזר בטוחות
+# 🛡️ פונקציות עזר
 # ==========================================
 def safe_float(value):
     try:
@@ -73,10 +52,8 @@ def safe_float(value):
     except: return 0.0
 
 def generate_sign(params):
-    try:
-        s = APP_SECRET + ''.join([f"{k}{v}" for k, v in sorted(params.items())]) + APP_SECRET
-        return hashlib.md5(s.encode('utf-8')).hexdigest().upper()
-    except: return ""
+    s = APP_SECRET + ''.join([f"{k}{v}" for k, v in sorted(params.items())]) + APP_SECRET
+    return hashlib.md5(s.encode('utf-8')).hexdigest().upper()
 
 def translate_to_hebrew(text):
     try:
@@ -85,10 +62,37 @@ def translate_to_hebrew(text):
     except: return text
 
 # ==========================================
-# 2. שליפת מוצרים
+# 🧠 שלב 1: הבלש (Smart Query)
+# ==========================================
+def smart_query_optimizer(user_text):
+    if HAS_GEMINI:
+        try:
+            prompt = f"""
+            Task: Translate Hebrew search to AliExpress English keywords.
+            Input: "{user_text}"
+            Rules:
+            1. Output ONLY the English product name.
+            2. IF user asks for "Drone" -> Output "Professional Camera Drone" (to avoid parts).
+            3. IF user asks for "Phone" -> Output "Smartphone Global Version".
+            4. Remove polite words.
+            Output: Keywords only.
+            """
+            response = model.generate_content(prompt)
+            if response.text:
+                return response.text.strip().replace('"', '')
+        except: pass
+
+    try:
+        from deep_translator import GoogleTranslator
+        return GoogleTranslator(source='auto', target='en').translate(user_text)
+    except:
+        return user_text
+
+# ==========================================
+# 🎣 שלב 2: הרשת (API)
 # ==========================================
 def get_ali_products(cleaned_query):
-    
+    # חוזרים ל-50 מוצרים ליציבות
     params = {
         'app_key': APP_KEY, 'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
         'sign_method': 'md5', 'method': 'aliexpress.affiliate.product.query',
@@ -101,37 +105,82 @@ def get_ali_products(cleaned_query):
     params['sign'] = generate_sign(params)
     
     try:
-        resp = requests.post("https://api-sg.aliexpress.com/sync", data=params, timeout=10).json()
-        data = resp.get('aliexpress_affiliate_product_query_response', {}).get('resp_result', {}).get('result', {}).get('products', {}).get('product', [])
+        response = session.post("https://api-sg.aliexpress.com/sync", data=params, timeout=10)
+        response.raise_for_status()
+        data = response.json().get('aliexpress_affiliate_product_query_response', {}).get('resp_result', {}).get('result', {}).get('products', {}).get('product', [])
         if isinstance(data, dict): data = [data]
         return data
     except: return []
 
 # ==========================================
-# 3. סינון (בלי הגבלת מחיר!)
+# 💎 שלב 3: הסלקטור (Strict Filter)
 # ==========================================
-def filter_products(products):
+def filter_candidates(products, query_en):
     if not products: return []
     
-    # רשימה שחורה מינימלית (רק זבל טכני מובהק)
-    blacklist = ["sticker", "decal", "screw", "part", "glass film", "screen protector"]
+    # --- רשימה שחורה טכנית (נגד חלקי חילוף) ---
+    # אלו המילים שהפילו אותנו (VTX, מנוע, בקר טיסה)
+    tech_blacklist = [
+        "vtx", "flight controller", "esc ", "motor", "propeller", 
+        "frame kit", "receiver", "antenna", "module", "spare part",
+        "sticker", "screw", "case", "film", "strap"
+    ]
     
-    clean = []
+    clean_products = []
+    prices = []
+    
     for p in products:
         title = p.get('product_title', '').lower()
-        if any(bad in title for bad in blacklist): continue
-        clean.append(p)
+        price = safe_float(p.get('target_sale_price', 0))
         
-    # מיון לפי מחיר (היקר למעלה - כדי שהטובים יופיעו ראשונים)
-    if clean:
-        clean.sort(key=lambda x: safe_float(x.get('target_sale_price', 0)), reverse=True)
-        return clean[:4]
+        # זריקה מיידית אם זה חלק טכני
+        if any(bad in title for bad in tech_blacklist): continue
+        
+        if price > 0:
+            clean_products.append(p)
+            prices.append(price)
+
+    if not clean_products: return []
+
+    # סינון מתמטי (רק אם יש מספיק נתונים)
+    if len(prices) > 5:
+        median_price = statistics.median(prices)
+        threshold = median_price * 0.3
+        clean_products = [p for p in clean_products if safe_float(p.get('target_sale_price', 0)) >= threshold]
+
+    clean_products.sort(key=lambda x: safe_float(x.get('target_sale_price', 0)), reverse=True)
+    candidates = clean_products[:20]
+
+    if not HAS_GEMINI: return candidates[:4]
+
+    # --- סינון AI נגד קומפוננטים ---
+    list_text = "\n".join([f"ID {i}: {p['product_title']} (Price: {p.get('target_sale_price', '0')})" for i, p in enumerate(candidates)])
     
-    # גיבוי אם הכל נמחק
-    return products[:4]
+    prompt = f"""
+    User Query: "{query_en}"
+    Task: Find the COMPLETE UNIT, reject PARTS.
+    
+    RULES:
+    1. REJECT COMPONENTS: If user wants "Drone", REJECT "VTX", "Motor", "Frame", "Transmitter", "ESC".
+       - Example: "Rush Tank VTX" is a PART. REJECT IT.
+    2. REJECT ACCESSORIES: Reject cases, straps, cables.
+    3. PRICE LOGIC: A Drone costs $50+. A VTX costs $30. Know the difference.
+    
+    List:
+    {list_text}
+    
+    Output JSON IDs: [0, 2]
+    """
+    try:
+        response = model.generate_content(prompt)
+        ids = [int(s) for s in re.findall(r'\b\d+\b', response.text)]
+        final = [candidates[i] for i in ids if i < len(candidates)]
+        return final[:4] if final else candidates[:4]
+    except:
+        return candidates[:4]
 
 # ==========================================
-# 4. יצירת לינקים ותמונות
+# 🛠️ כלי עזר
 # ==========================================
 def get_short_link(raw_url):
     if not raw_url: return None
@@ -144,7 +193,7 @@ def get_short_link(raw_url):
             'promotion_link_type': '0', 'source_values': clean_url, 'tracking_id': TRACKING_ID
         }
         params['sign'] = generate_sign(params)
-        resp = requests.post("https://api-sg.aliexpress.com/sync", data=params, timeout=5).json()
+        resp = session.post("https://api-sg.aliexpress.com/sync", data=params, timeout=5).json()
         result = resp.get('aliexpress_affiliate_link_generate_response', {}).get('resp_result', {}).get('result', {}).get('promotion_links', {}).get('promotion_link', [])
         if result: return result[0].get('promotion_short_link') or result[0].get('promotion_link')
     except: pass
@@ -155,12 +204,10 @@ def create_collage(image_urls):
         images = []
         for url in image_urls[:4]:
             try:
-                r = requests.get(url, timeout=3)
+                r = session.get(url, timeout=3)
                 img = Image.open(io.BytesIO(r.content)).convert('RGB').resize((500,500))
                 images.append(img)
-            except: 
-                images.append(Image.new('RGB', (500,500), color='#FFFFFF'))
-        
+            except: images.append(Image.new('RGB', (500,500), color='#FFFFFF'))
         while len(images) < 4: images.append(Image.new('RGB', (500,500), color='#FFFFFF'))
         
         collage = Image.new('RGB', (1000, 1000), 'white')
@@ -180,20 +227,23 @@ def create_collage(image_urls):
         return output
     except: return None
 
-# ==========================================
-# הבוט וההודעות (העיצוב המקורי!)
-# ==========================================
+def notify_admin(user, query):
+    if not ADMIN_ID: return
+    try:
+        username = f"@{user.username}" if user.username else ""
+        msg = f"🕵️‍♂️ **חיפוש:** {query}\n👤 {user.first_name} {username}"
+        bot.send_message(ADMIN_ID, msg)
+    except: pass
 
+# ==========================================
+# 🚀 בוט ראשי
+# ==========================================
 @bot.message_handler(commands=['start'])
 def start(m):
-    # העיצוב היוקרתי המקורי
     welcome_msg = (
-        "✨ <b>ברוכים הבאים ל-DrDeals Premium</b> | הדור הבא של הקניות 💎\n\n"
+        "✨ <b>ברוכים הבאים ל-DrDeals Premium</b> 💎\n\n"
         "נעים להכיר, אני עוזר הקניות האישי שלכם.\n"
-        "נמאס לכם לקבל מוצרים זולים וחיקויים? גם לי.\n\n"
-        "🧠 <b>איך אני שומר עליכם?</b>\n"
-        "פיתחתי מנוע AI חכם שסורק אלפי מוצרים, מזהה את **האיכותיים ביותר**,\n"
-        "ומסנן עבורכם את כל השאר. אתם תקבלו רק את הטופ של הטופ.\n\n"
+        "המערכת שלי יודעת לסנן אביזרים וחלקי חילוף ולמצוא את המוצר האמיתי.\n\n"
         "👇 <b>מה תרצו לחפש היום? (כתבו 'חפש לי...')</b>"
     )
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
@@ -219,34 +269,27 @@ def handle_text(m):
         return
 
     raw_query = m.text.replace("חפש לי", "").strip()
+    notify_admin(m.from_user, raw_query)
     
-    # הודעת סטטוס דינמית
-    msg = bot.send_message(m.chat.id, f"🔍 <b>הבלש מנתח את הבקשה: {raw_query}...</b>", parse_mode="HTML")
+    msg = bot.send_message(m.chat.id, f"🔍 <b>בודק: {raw_query}...</b>", parse_mode="HTML")
     
-    # 1. הבלש נכנס לפעולה (תרגום חכם)
-    optimized_query = smart_query_optimizer(raw_query)
-    
-    # עדכון סטטוס למשתמש
-    if optimized_query != raw_query:
-        bot.edit_message_text(f"💎 <b>מחפש את הטופ עבור: {optimized_query}...</b>", m.chat.id, msg.message_id, parse_mode="HTML")
-    
-    # 2. שליפה
-    products = get_ali_products(optimized_query)
-    
-    # גיבוי: אם הבלש טעה והחיפוש נכשל, מנסים את המקור
-    if not products:
-        products = get_ali_products(raw_query)
+    query_en = smart_query_optimizer(raw_query)
+    products = get_ali_products(query_en)
+    if not products: products = get_ali_products(raw_query)
 
     if not products:
-        bot.edit_message_text("❌ לא נמצאו מוצרים. נסה חיפוש אחר.", m.chat.id, msg.message_id)
+        bot.edit_message_text("❌ לא נמצאו מוצרים.", m.chat.id, msg.message_id)
         return
 
-    # 3. סינון (בלי הגבלת מחיר)
-    final_list = filter_products(products)
+    bot.edit_message_text(f"💎 <b>מסנן חלקי חילוף ואביזרים...</b>", m.chat.id, msg.message_id, parse_mode="HTML")
+    final_list = filter_candidates(products, query_en)
     
     bot.delete_message(m.chat.id, msg.message_id)
 
-    # 4. בניית התשובה המעוצבת
+    if not final_list:
+        bot.send_message(m.chat.id, "🤔 מצאתי רק אביזרים/חלקי חילוף ולא את המוצר השלם.")
+        return
+
     image_urls = []
     full_text = ""
     markup = types.InlineKeyboardMarkup(row_width=1)
@@ -257,21 +300,16 @@ def handle_text(m):
         orig_price = safe_float(p.get('target_original_price', 0))
         link = get_short_link(p.get('product_detail_url'))
         
-        if not link: continue
+        if not link or not link.startswith('http'): continue
         
-        # חישוב אחוזי הנחה (קריטי לעיצוב!)
         discount_txt = ""
         if orig_price > price:
             percent = int(((orig_price - price) / orig_price) * 100)
             discount_txt = f" | 📉 <b>{percent}% הנחה</b>"
 
         image_urls.append(p.get('product_main_image_url'))
-        
-        full_text += f"{i+1}. 🏅 <b>{title[:55]}...</b>\n"
-        full_text += f"💰 מחיר: <b>{price}₪</b>{discount_txt}\n"
-        full_text += f"🔗 {link}\n\n"
-        
-        markup.add(types.InlineKeyboardButton(f"🛍️ לרכישת מוצר {i+1}", url=link))
+        full_text += f"{i+1}. 🏅 <b>{title[:55]}...</b>\n💰 מחיר: <b>{price}₪</b>{discount_txt}\n🔗 {link}\n\n"
+        markup.add(types.InlineKeyboardButton(f"🛍️ מוצר {i+1}", url=link))
     
     if image_urls:
         collage = create_collage(image_urls)
