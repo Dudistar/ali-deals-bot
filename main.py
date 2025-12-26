@@ -103,14 +103,14 @@ def smart_query_optimizer(user_text):
     if GEMINI_API_KEY:
         try:
             prompt = f"""
-            Task: Convert Hebrew search to English for AliExpress.
-            Input: "{user_text}"
-            Rules:
-            1. Keep brand names (Samsung, Xiaomi) and models (A73, Buds 3) EXACT.
-            2. REMOVE user intent words ("I want", "buy", "search for").
-            3. IF user specifies a model but no object, assume the device. 
-               (e.g. "A73" -> "Samsung Galaxy A73 Phone", NOT "Case").
-            Output: English keywords only.
+            Role: eCommerce Search Expert.
+            Input: "{user_text}" (Hebrew).
+            Action: 
+            1. Identify the CORE PRODUCT (Device/Item).
+            2. Translate to precise English.
+            3. IGNORE polite words ("find", "buy", "please").
+            4. IF specific model (e.g. "A73") -> Expand to "Samsung Galaxy A73 Phone".
+            Output: English keywords ONLY.
             """
             response = model.generate_content(prompt)
             if response.text:
@@ -127,6 +127,7 @@ def smart_query_optimizer(user_text):
 def get_ali_products(cleaned_query):
     if not cleaned_query or len(cleaned_query) < 2: return []
 
+    # הגדלנו את כמות המוצרים ל-100 כדי לתת לסינון יותר "בשר" לעבוד עליו
     params = {
         'app_key': APP_KEY, 'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
         'sign_method': 'md5', 'method': 'aliexpress.affiliate.product.query',
@@ -134,7 +135,7 @@ def get_ali_products(cleaned_query):
         'keywords': cleaned_query, 
         'target_currency': 'ILS', 'ship_to_country': 'IL',
         'sort': 'LAST_VOLUME_DESC', 
-        'page_size': '50', 
+        'page_size': '100',  # שאיבה של יותר מוצרים
     }
     params['sign'] = generate_sign(params)
     try:
@@ -147,49 +148,68 @@ def get_ali_products(cleaned_query):
 def filter_with_snob_ai(products, query_en):
     if not products: return []
     
-    # 1. ניקוי ראשוני לפי מחיר (זול מידי = אביזר/זבל)
-    # נמיין לפי מחיר יורד (מהיקר לזול)
-    products.sort(key=lambda x: float(x.get('target_sale_price', 0)), reverse=True)
+    # שלב 1: ניקוי ידני גס
+    blacklist = ["sticker", "decal", "skin", "screw", "part"]
+    clean_products = []
     
-    # ניקח את ה-25 המוצרים היקרים/רלוונטיים ביותר לבדיקה
-    candidates = products[:25]
-
-    if not GEMINI_API_KEY: return candidates[:4]
-
-    # הכנת הרשימה ל-AI עם המחירים
-    list_text = "\n".join([f"ID {i}: {p['product_title']} (Price: {p.get('target_sale_price', '0')})" for i, p in enumerate(candidates)])
+    # חישוב חציון מחיר כדי לזהות זבל זול מידי
+    prices = [float(p.get('target_sale_price', 0)) for p in products if float(p.get('target_sale_price', 0)) > 0]
+    if not prices: return []
+    median_price = statistics.median(prices)
+    min_price_threshold = median_price * 0.3 # מוצרים שעולים פחות מ-30% מהממוצע חשודים כזבל
     
-    # --- הפרומפט הגנרי החדש (בלי רשימות שחורות ידניות) ---
+    for p in products:
+        title = p.get('product_title', '').lower()
+        price = float(p.get('target_sale_price', 0))
+        
+        if any(bad in title for bad in blacklist): continue
+        if price < min_price_threshold: continue # זול מידי
+        
+        clean_products.append(p)
+    
+    # אם הסינון הידני היה אגרסיבי מידי, נשחרר קצת
+    if len(clean_products) < 5: 
+        clean_products = products[:20]
+    else:
+        # מיון לפי מחיר (מהיקר לזול - הנחה שהמוצר האמיתי יקר מהאביזר)
+        clean_products.sort(key=lambda x: float(x.get('target_sale_price', 0)), reverse=True)
+        clean_products = clean_products[:30] # שולחים ל-AI את ה-30 היקרים והטובים
+
+    if not GEMINI_API_KEY: return clean_products[:4]
+
+    # שלב 2: סינון AI עמוק
+    list_text = "\n".join([f"ID {i}: {p['product_title']} (Price: {p.get('target_sale_price', '0')})" for i, p in enumerate(clean_products)])
+    
     prompt = f"""
-    User Search: "{query_en}"
+    Search Query: "{query_en}"
     
-    Role: Quality Control Expert.
-    Goal: Identify the MAIN DEVICE only.
+    Task: Filter AliExpress results.
+    GOAL: Find the MAIN ITEM the user wants.
     
-    LOGIC RULES (Apply to ALL items):
-    1. PRICE CHECK: Use common sense. 
-       - If user wants a "Drone" (usually $50+), and item is $5, it's a Propeller/Battery/Toy -> REJECT.
-       - If user wants a "Phone" (usually $200+), and item is $5, it's a Case/Screen Protector -> REJECT.
-       
-    2. "PART OF" vs "IS A":
-       - If the item is FOR the device (e.g., "Strap FOR Watch", "Case FOR Phone", "Charger FOR Laptop"), but user asked for the DEVICE -> REJECT.
-       - Only accept the accessory if the user explicitly asked for "Strap", "Case", etc.
-       
-    3. DESCRIPTION MATCH:
-       - Reject items that are clearly "Mini", "Toy version", "Sticker", "Cable" unless specifically requested.
-
-    List of items to check:
+    STRICT FILTERING RULES:
+    1. REJECT ACCESSORIES: If user wants "Phone", reject "Case". If "Drone", reject "Propeller".
+    2. REJECT UNRELATED: If item is completely different category -> REJECT.
+    3. PRICE LOGIC: The main item is usually the most expensive in the list. Low price = Accessory.
+    
+    List:
     {list_text}
     
-    Output: Return ONLY the IDs of the items that are the REAL MAIN PRODUCT.
+    Output: JSON array of valid IDs only. Example: [0, 3, 5]
     """
     try:
         response = model.generate_content(prompt)
+        # שימוש בביטוי רגולרי למציאת מספרים בלבד, ליתר ביטחון
         ids = [int(s) for s in re.findall(r'\b\d+\b', response.text)]
-        ai_filtered = [candidates[i] for i in ids if i < len(candidates)]
+        
+        ai_filtered = [clean_products[i] for i in ids if i < len(clean_products)]
+        
+        # אם ה-AI לא מצא כלום (מחמיר מידי), נחזיר את היקרים ביותר מהסינון הידני
+        if not ai_filtered:
+            return clean_products[:4]
+            
         return ai_filtered 
     except: 
-        return candidates[:4]
+        return clean_products[:4]
 
 # ==========================================
 # הנדלרים
@@ -242,31 +262,36 @@ def handle_text(m):
     notify_admin(m.from_user, raw_query)
     bot.send_chat_action(m.chat.id, 'typing')
     
-    loading = bot.send_message(m.chat.id, f"💎 <b>מנתח בקשה: {raw_query}...</b>", parse_mode="HTML")
+    # שלב 1: הצגת הודעת פתיחה דינמית
+    status_msg = bot.send_message(m.chat.id, f"🔍 <b>מתחיל בסריקה עבור: {raw_query}...</b>", parse_mode="HTML")
     
-    # שלב 1: תרגום חכם
+    # שלב 2: תרגום ומיקוד
     optimized_query = smart_query_optimizer(raw_query)
+    bot.edit_message_text(f"🇺🇸 <b>ממקד חיפוש: {optimized_query}...</b>", m.chat.id, status_msg.message_id, parse_mode="HTML")
     
-    # שלב 2: משיכת מוצרים
+    # שלב 3: שליפה (הגדלנו ל-100 מוצרים אז זה לוקח שניה)
     raw_products = get_ali_products(optimized_query)
     
     if not raw_products:
+        # נסיון שני אם הראשון נכשל
         raw_products = get_ali_products(raw_query)
 
     if not raw_products:
-        bot.delete_message(m.chat.id, loading.message_id)
-        bot.send_message(m.chat.id, "❌ לא מצאתי מוצרים רלוונטיים.")
+        bot.delete_message(m.chat.id, status_msg.message_id)
+        bot.send_message(m.chat.id, "❌ לא מצאתי מוצרים. נסו חיפוש באנגלית.")
         return
 
-    # שלב 3: סינון חכם מבוסס מחיר והקשר (הגיליוטינה הגנרית)
+    # שלב 4: סינון עמוק
+    bot.edit_message_text(f"🧠 <b>מפעיל סינון איכות (מסיר זיופים ואביזרים)...</b>", m.chat.id, status_msg.message_id, parse_mode="HTML")
     final_list = filter_with_snob_ai(raw_products, optimized_query)
-    bot.delete_message(m.chat.id, loading.message_id)
+    
+    # מחיקת הודעת הסטטוס לפני הצגת התוצאות
+    bot.delete_message(m.chat.id, status_msg.message_id)
 
     if not final_list:
          msg = (
              f"🤔 <b>לא מצאתי בדיוק את מה שחיפשת ({raw_query})</b>\n\n"
-             "מצאתי בעיקר אביזרים נלווים (כיסויים/מגנים) ולא את המכשיר עצמו.\n"
-             "נסה לדייק את החיפוש."
+             "המוצרים שמצאתי היו בעיקר אביזרים נלווים ולא המכשיר עצמו.\n"
          )
          bot.send_message(m.chat.id, msg, parse_mode="HTML")
          return
