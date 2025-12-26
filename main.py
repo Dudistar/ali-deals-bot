@@ -10,11 +10,6 @@ import google.generativeai as genai
 from telebot import types
 from PIL import Image, ImageDraw
 
-try:
-    from deep_translator import GoogleTranslator
-except ImportError:
-    pass
-
 # ==========================================
 # הגדרות מערכת
 # ==========================================
@@ -24,7 +19,6 @@ APP_SECRET = "Co7bNfYfqlu8KTdj2asXQV78oziICQEs"
 TRACKING_ID = "DrDeals"
 ADMIN_ID = 173837076
 
-# משיכת מפתח מהכספת
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 if GEMINI_API_KEY:
@@ -75,6 +69,7 @@ def get_short_link(raw_url):
 
 def translate_to_hebrew(text):
     try:
+        from deep_translator import GoogleTranslator
         return GoogleTranslator(source='auto', target='iw').translate(text)
     except:
         return text
@@ -104,39 +99,33 @@ def create_collage(image_urls):
     output.seek(0)
     return output
 
-# --- פונקציית תרגום חכמה ומשוריינת ---
 def smart_query_optimizer(user_text):
-    # נסיון 1: AI של גוגל
     if GEMINI_API_KEY:
         try:
             prompt = f"""
-            Translate this Hebrew search term to simple English keywords for AliExpress.
+            Task: Convert Hebrew search to English for AliExpress.
             Input: "{user_text}"
             Rules:
-            1. Remove polite words ("Find me", "I want").
-            2. Keep brand names and model numbers exact.
-            3. Output ONLY the English keywords.
+            1. Keep brand names (Samsung, Xiaomi) and models (A73, Buds 3) EXACT.
+            2. REMOVE user intent words ("I want", "buy", "search for").
+            3. IF user specifies a model but no object, assume the device. 
+               (e.g. "A73" -> "Samsung Galaxy A73 Phone", NOT "Case").
+            Output: English keywords only.
             """
             response = model.generate_content(prompt)
             if response.text:
                 return response.text.strip()
         except:
-            pass # אם נכשל, עוברים הלאה
-
-    # נסיון 2: תרגום רגיל
+            pass
+            
     try:
-        translated = GoogleTranslator(source='auto', target='en').translate(user_text)
-        return translated
+        from deep_translator import GoogleTranslator
+        return GoogleTranslator(source='auto', target='en').translate(user_text)
     except:
-        pass
-    
-    # נסיון 3: המקור
-    return user_text
+        return user_text
 
 def get_ali_products(cleaned_query):
-    # אם הקוורי ריק, לא שולחים בקשה כדי לא לקבל זבל
-    if not cleaned_query or len(cleaned_query) < 2:
-        return []
+    if not cleaned_query or len(cleaned_query) < 2: return []
 
     params = {
         'app_key': APP_KEY, 'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
@@ -158,37 +147,41 @@ def get_ali_products(cleaned_query):
 def filter_with_snob_ai(products, query_en):
     if not products: return []
     
-    # 1. סינון בסיסי (גיליוטינה)
-    blacklist = ["propeller", "part", "screw", "sticker"]
-    clean_products = []
-    for p in products:
-        title = p.get('product_title', '').lower()
-        if any(bad in title for bad in blacklist): continue
-        clean_products.append(p)
+    # 1. ניקוי ראשוני לפי מחיר (זול מידי = אביזר/זבל)
+    # נמיין לפי מחיר יורד (מהיקר לזול)
+    products.sort(key=lambda x: float(x.get('target_sale_price', 0)), reverse=True)
     
-    # אם אין מספיק מוצרים נקיים, מחזירים את המקוריים (אלא אם זה זבל מוחלט)
-    if len(clean_products) < 2: clean_products = products
-
-    # לוקחים את החצי היקר יותר (כדי לסנן פיצ'יפקעס)
-    clean_products.sort(key=lambda x: float(x.get('target_sale_price', 0)), reverse=True)
-    candidates = clean_products[:len(clean_products)//2]
-    
-    # גיבוי למקרה שנשארנו בלי כלום
-    if not candidates: candidates = clean_products[:5]
+    # ניקח את ה-25 המוצרים היקרים/רלוונטיים ביותר לבדיקה
+    candidates = products[:25]
 
     if not GEMINI_API_KEY: return candidates[:4]
 
-    # 2. סינון AI חכם לבדיקת רלוונטיות
-    list_text = "\n".join([f"ID {i}: {p['product_title']} (Price: {p.get('target_sale_price', '0')})" for i, p in enumerate(candidates[:15])])
+    # הכנת הרשימה ל-AI עם המחירים
+    list_text = "\n".join([f"ID {i}: {p['product_title']} (Price: {p.get('target_sale_price', '0')})" for i, p in enumerate(candidates)])
+    
+    # --- הפרומפט הגנרי החדש (בלי רשימות שחורות ידניות) ---
     prompt = f"""
-    User Query: "{query_en}"
-    Task: Select items that MATCH the query.
-    Rules: 
-    1. REJECT items that are completely unrelated to "{query_en}".
-    2. REJECT cheap parts/toys if the user asked for a main device.
-    List:
+    User Search: "{query_en}"
+    
+    Role: Quality Control Expert.
+    Goal: Identify the MAIN DEVICE only.
+    
+    LOGIC RULES (Apply to ALL items):
+    1. PRICE CHECK: Use common sense. 
+       - If user wants a "Drone" (usually $50+), and item is $5, it's a Propeller/Battery/Toy -> REJECT.
+       - If user wants a "Phone" (usually $200+), and item is $5, it's a Case/Screen Protector -> REJECT.
+       
+    2. "PART OF" vs "IS A":
+       - If the item is FOR the device (e.g., "Strap FOR Watch", "Case FOR Phone", "Charger FOR Laptop"), but user asked for the DEVICE -> REJECT.
+       - Only accept the accessory if the user explicitly asked for "Strap", "Case", etc.
+       
+    3. DESCRIPTION MATCH:
+       - Reject items that are clearly "Mini", "Toy version", "Sticker", "Cable" unless specifically requested.
+
+    List of items to check:
     {list_text}
-    Output: IDs like 0, 2. If nothing matches, output EMPTY.
+    
+    Output: Return ONLY the IDs of the items that are the REAL MAIN PRODUCT.
     """
     try:
         response = model.generate_content(prompt)
@@ -245,38 +238,35 @@ def handle_text(m):
         if len(m.text) > 3: bot.reply_to(m, "💡 כדי להתחיל חיפוש, אנא התחילו את המשפט במילים **'חפש לי'**.")
         return
 
-    # מנקים את הבקשה מה"חפש לי"
     raw_query = m.text.replace("חפש לי", "").strip()
     notify_admin(m.from_user, raw_query)
-    
     bot.send_chat_action(m.chat.id, 'typing')
+    
     loading = bot.send_message(m.chat.id, f"💎 <b>מנתח בקשה: {raw_query}...</b>", parse_mode="HTML")
     
-    # תרגום חכם לאנגלית (חובה כדי למנוע תוצאות זבל)
+    # שלב 1: תרגום חכם
     optimized_query = smart_query_optimizer(raw_query)
     
-    # משיכת מוצרים
+    # שלב 2: משיכת מוצרים
     raw_products = get_ali_products(optimized_query)
     
-    # אם לא מצאנו כלום בחיפוש הראשון, מנסים חיפוש נוסף עם המקור
     if not raw_products:
-         raw_products = get_ali_products(raw_query)
+        raw_products = get_ali_products(raw_query)
 
     if not raw_products:
         bot.delete_message(m.chat.id, loading.message_id)
         bot.send_message(m.chat.id, "❌ לא מצאתי מוצרים רלוונטיים.")
         return
 
-    # סינון איכות + רלוונטיות
+    # שלב 3: סינון חכם מבוסס מחיר והקשר (הגיליוטינה הגנרית)
     final_list = filter_with_snob_ai(raw_products, optimized_query)
     bot.delete_message(m.chat.id, loading.message_id)
 
-    # אם הסינון החכם מחק את הכל כי זה היה זבל (מכונות תספורת כשביקשת צירים)
     if not final_list:
          msg = (
-             f"🤔 <b>לא מצאתי תוצאות מדוייקות עבור: {raw_query}</b>\n\n"
-             "המוצרים שמצאתי לא היו קשורים מספיק למה שביקשת.\n"
-             "נסה לכתוב את שם המוצר באנגלית או בצורה אחרת."
+             f"🤔 <b>לא מצאתי בדיוק את מה שחיפשת ({raw_query})</b>\n\n"
+             "מצאתי בעיקר אביזרים נלווים (כיסויים/מגנים) ולא את המכשיר עצמו.\n"
+             "נסה לדייק את החיפוש."
          )
          bot.send_message(m.chat.id, msg, parse_mode="HTML")
          return
@@ -294,7 +284,6 @@ def handle_text(m):
             price = float(p.get('target_sale_price', 0))
             link = get_short_link(p.get('product_detail_url'))
             
-            # בדיקה קריטית: אם אין לינק תקין, מדלגים (מונע קריסה)
             if not link or len(str(link)) < 10:
                 continue
 
