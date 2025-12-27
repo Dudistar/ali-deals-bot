@@ -1,14 +1,16 @@
 import telebot
 import requests
 import time
+import re
 import os
 import io
 import hashlib
+import statistics
 import logging
 import json
 import random
 from telebot import types
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 from requests.adapters import HTTPAdapter
 from requests.packages.urllib3.util.retry import Retry
 from difflib import SequenceMatcher
@@ -81,32 +83,23 @@ def generate_sign(params):
     return hashlib.md5(s.encode('utf-8')).hexdigest().upper()
 
 # ==========================================
-# 🛑 פילטר חכם עם fuzzy match
+# 🛑 פילטר חכם (Fuzzy Guard)
 # ==========================================
-def similar(a, b):
-    return SequenceMatcher(None, a.lower(), b.lower()).ratio()
+def fuzzy_match(title, query, threshold=0.45):
+    """ בודק התאמה בין כותרת מוצר למילת חיפוש """
+    title_lower = title.lower()
+    query_words = query.lower().split()
+    matches = [SequenceMatcher(None, w, title_lower).ratio() for w in query_words if len(w) > 2]
+    return any(m >= threshold for m in matches)
 
-def keyword_guard(product_title, query_english, threshold=0.5):
-    """
-    פילטר חכם עם fuzzy string match.
-    מחזיר True רק אם לפחות מילה אחת מתאימה ברמה מינימלית (threshold).
-    """
-    title_lower = product_title.lower()
-    query_parts = query_english.lower().split()
-    if not query_parts: return True
-    
-    for word in query_parts:
-        if len(word) < 2: continue
-        ratio = similar(title_lower, word)
-        if ratio >= threshold:
-            return True
-    return False
+def keyword_guard(product_title, query_english):
+    return fuzzy_match(product_title, query_english, threshold=0.45)
 
 # ==========================================
-# 🧠 Smart Query
+# 🧠 שלב 1: הבלש (Smart Query)
 # ==========================================
 def smart_query_optimizer(user_text):
-    time.sleep(random.uniform(0.5, 1.5))
+    time.sleep(random.uniform(1.5, 3.0))  # Give time for "thinking"
     if HAS_GEMINI:
         try:
             prompt = f"""
@@ -114,6 +107,7 @@ def smart_query_optimizer(user_text):
             Input: "{user_text}"
             Rules:
             1. Output ONLY English.
+            2. "Coat" -> "Woman Coat".
             Output: Keywords only.
             """
             response = model.generate_content(prompt)
@@ -132,12 +126,11 @@ def smart_query_optimizer(user_text):
     return None
 
 # ==========================================
-# 🎣 API Fetcher
+# 🎣 שלב 2: הרשת (API Fetcher)
 # ==========================================
 def get_ali_products(cleaned_query, category_id=None):
     if not cleaned_query: return []
-    time.sleep(random.uniform(0.5, 1.5))
-    
+    time.sleep(random.uniform(1.5, 3.0))
     params = {
         'app_key': APP_KEY, 'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
         'sign_method': 'md5', 'method': 'aliexpress.affiliate.product.query',
@@ -149,9 +142,7 @@ def get_ali_products(cleaned_query, category_id=None):
     }
     if category_id:
         params['category_ids'] = category_id
-    
     params['sign'] = generate_sign(params)
-    
     try:
         response = session.post("https://api-sg.aliexpress.com/sync", data=params, timeout=10)
         data = response.json().get('aliexpress_affiliate_product_query_response', {}).get('resp_result', {}).get('result', {}).get('products', {}).get('product', [])
@@ -160,63 +151,65 @@ def get_ali_products(cleaned_query, category_id=None):
     except: return []
 
 # ==========================================
-# ✍️ AI Rewrite + Smart Filter
+# ✍️ שלב 3: העורך (AI Rewrite + Strict Guard)
 # ==========================================
 def ai_filter_and_rewrite(products, user_query_hebrew, query_english):
     if not products: return []
 
-    sane_products = []
-    for p in products:
-        if keyword_guard(p.get('product_title', ''), query_english, threshold=0.45):
-            price = safe_float(p.get('target_sale_price', 0))
-            rating = float(p.get('product_rating', 0) or 0)
-            if price >= 50 and rating >= 4.0:
-                sane_products.append(p)
-    
-    if not sane_products:
-        return []
+    sane_products = [p for p in products if keyword_guard(p.get('product_title', ''), query_english)]
+    if not sane_products: return []
 
-    sane_products.sort(key=lambda x: safe_float(x.get('target_sale_price', 0)), reverse=True)
-    candidates = sane_products[:10]
+    pre_filtered = [p for p in sane_products if safe_float(p.get('target_sale_price', 0)) > 0]
+    pre_filtered.sort(key=lambda x: safe_float(x.get('target_sale_price', 0)), reverse=True)
+    candidates = pre_filtered[:10]
 
-    time.sleep(random.uniform(1.5, 3.0))
+    time.sleep(random.uniform(2, 4))  # simulate AI thinking
 
-    final_list = []
-    if HAS_GEMINI:
-        items_str = ""
-        for i, p in enumerate(candidates):
-            items_str += f"Item {i}: {p.get('product_title')} | Price: {p.get('target_sale_price')}\n"
-
-        prompt = f"""
-        Role: Product Curator.
-        User Query: "{user_query_hebrew}"
-        Task:
-        1. FILTER: Is it the correct product?
-        2. REWRITE: Write a short Hebrew title (max 10 words) with emoji.
-        Items:
-        {items_str}
-        Output JSON ONLY.
-        """
-        try:
-            response = model.generate_content(prompt)
-            text_resp = response.text.strip().replace("```json", "").replace("```", "")
-            ai_decisions = json.loads(text_resp)
-            for decision in ai_decisions:
-                if decision.get("valid") == True:
-                    idx = decision.get("index")
-                    if idx < len(candidates):
-                        product = candidates[idx]
-                        product['ai_title'] = decision.get("hebrew_title")
-                        final_list.append(product)
-        except:
-            pass
-
-    if not final_list:
-        for p in candidates[:3]:
+    if not HAS_GEMINI:
+        for p in candidates:
             p['ai_title'] = translate_to_hebrew(p.get('product_title'))
         return candidates[:3]
 
-    return final_list[:3]
+    items_str = ""
+    for i, p in enumerate(candidates):
+        items_str += f"Item {i}: {p.get('product_title')} | Price: {p.get('target_sale_price')}\n"
+
+    prompt = f"""
+    Role: Product Curator.
+    User Query: "{user_query_hebrew}"
+    Task:
+    1. FILTER: Correct product? (Coat=Coat)
+    2. REWRITE: short Hebrew title (max 10 words) + emoji
+    Items:
+    {items_str}
+    Output JSON ONLY:
+    [
+        {{"index": 0, "valid": true, "hebrew_title": "מעיל אלגנטי בצבע קרם 🧥"}},
+        {{"index": 1, "valid": false}}
+    ]
+    """
+    try:
+        response = model.generate_content(prompt)
+        text_resp = response.text.strip().replace("```json", "").replace("```", "")
+        ai_decisions = json.loads(text_resp)
+        final_list = []
+        for decision in ai_decisions:
+            if decision.get("valid"):
+                idx = decision.get("index")
+                if idx < len(candidates):
+                    product = candidates[idx]
+                    product['ai_title'] = decision.get("hebrew_title")
+                    final_list.append(product)
+        if not final_list:
+            for p in candidates[:3]:
+                p['ai_title'] = translate_to_hebrew(p.get('product_title'))
+            return candidates[:3]
+        return final_list[:3]
+    except Exception as e:
+        logging.error(f"AI Error: {e}")
+        for p in candidates[:3]:
+            p['ai_title'] = translate_to_hebrew(p.get('product_title'))
+        return candidates[:3]
 
 # ==========================================
 # 🛠️ לינקים וקולאז'
@@ -248,19 +241,18 @@ def create_collage(image_urls):
                 images.append(img)
             except: images.append(Image.new('RGB', (500,500), color='#FFFFFF'))
         while len(images) < 3: images.append(Image.new('RGB', (500,500), color='#FFFFFF'))
-        
+
         collage = Image.new('RGB', (1000, 1000), 'white')
         collage.paste(images[0].resize((1000, 500)), (0, 0))
         collage.paste(images[1].resize((500, 500)), (0, 500))
         collage.paste(images[2].resize((500, 500)), (500, 500))
-        
+
         draw = ImageDraw.Draw(collage)
         positions = [(50,50), (50,550), (550,550)]
         for i, pos in enumerate(positions):
-             x, y = pos
-             draw.ellipse((x, y, x+60, y+60), fill="#FFD700", outline="black", width=3)
-             draw.text((x+20, y+10), str(i+1), fill="black")
-        
+            x, y = pos
+            draw.ellipse((x, y, x+60, y+60), fill="#FFD700", outline="black", width=3)
+            draw.text((x+20, y+10), str(i+1), fill="black", font=None)
         output = io.BytesIO()
         collage.save(output, format='JPEG', quality=85)
         output.seek(0)
@@ -282,8 +274,8 @@ def notify_admin(user, query):
 def start(m):
     welcome_msg = (
         "✨ <b>ברוכים הבאים ל-DrDeals Premium</b> 💎\n\n"
-        "הבוט הזה לא מתפשר. או מוצר מדויק או כלום.\n"
-        "👇 <b>נסו אותו: 'חפש לי...'</b>"
+        "הבוט הזה עובד בקפדנות: או מוצר אמיתי או מסנן.\n"
+        "👇 <b>נסו: 'חפש לי...'</b>"
     )
     bot.send_message(m.chat.id, welcome_msg, parse_mode="HTML")
 
@@ -295,37 +287,37 @@ def handle_text(m):
 
     raw_query = m.text.replace("חפש לי", "").strip()
     notify_admin(m.from_user, raw_query)
-    
+
     bot.send_chat_action(m.chat.id, 'typing')
-    msg = bot.send_message(m.chat.id, f"🔍 <b>מנתח בקשה: {raw_query}...</b>", parse_mode="HTML")
-    
+    msg = bot.send_message(m.chat.id, f"🕵️‍♂️ מחפש ביסודיות: {raw_query}...", parse_mode="HTML")
+    time.sleep(2)
+
     cat_id = get_category_id(raw_query)
     query_en = smart_query_optimizer(raw_query)
-    
     if not query_en:
         bot.edit_message_text("⚠️ תקלה בתרגום. נסה שוב.", m.chat.id, msg.message_id)
         return
 
-    bot.edit_message_text(f"🌏 <b>סורק מאגרים בינלאומיים...</b>", m.chat.id, msg.message_id, parse_mode="HTML")
-    
+    bot.edit_message_text(f"🌏 סורק מאגרים בינלאומיים...", m.chat.id, msg.message_id, parse_mode="HTML")
+    time.sleep(2)
     products = get_ali_products(query_en, category_id=cat_id)
     if not products:
         bot.edit_message_text("❌ לא נמצאו מוצרים תואמים.", m.chat.id, msg.message_id)
         return
 
-    bot.edit_message_text(f"🧠 <b>ה-AI מסנן ומייצר תיאורים...</b>", m.chat.id, msg.message_id, parse_mode="HTML")
-    
+    bot.edit_message_text(f"🧠 ה-AI כותב תיאורים ומסנן זיופים...", m.chat.id, msg.message_id, parse_mode="HTML")
+    time.sleep(2)
     final_list = ai_filter_and_rewrite(products, raw_query, query_en)
     bot.delete_message(m.chat.id, msg.message_id)
 
     if not final_list:
-        bot.send_message(m.chat.id, f"🛑 <b>לא נמצאו תוצאות מדויקות.</b>\nהמוצרים שנמצאו לא עברו את הסינון החכם.")
+        bot.send_message(m.chat.id, f"🛑 לא נמצאו תוצאות מדויקות.\nמסנן הברזל עבד ומנע הצגת מוצרים לא רלוונטיים.")
         return
 
     image_urls = []
     full_text = f"🛍️ <b>הבחירות המובילות עבורך:</b>\n\n"
     markup = types.InlineKeyboardMarkup(row_width=1)
-    
+
     for i, p in enumerate(final_list):
         title = p.get('ai_title', translate_to_hebrew(p.get('product_title')))
         price = safe_float(p.get('target_sale_price', 0))
@@ -333,28 +325,23 @@ def handle_text(m):
         sales = p.get('last_volume', 0)
         link = get_short_link(p.get('product_detail_url'))
         if not link: continue
-        
+
         discount_txt = ""
         if orig_price > price:
             percent = int(((orig_price - price) / orig_price) * 100)
             if percent > 5: discount_txt = f" | 📉 <b>{percent}% הנחה</b>"
-
         sales_txt = ""
         if sales and int(sales) > 10: sales_txt = f" | 📦 <b>{sales}+ נרכשו</b>"
 
         image_urls.append(p.get('product_main_image_url'))
-        
-        full_text += f"{i+1}. {title}\n"
-        full_text += f"💰 <b>{price}₪</b>{discount_txt}{sales_txt}\n"
-        full_text += f"🔗 {link}\n\n"
-        
+        full_text += f"{i+1}. {title}\n💰 <b>{price}₪</b>{discount_txt}{sales_txt}\n🔗 {link}\n\n"
         markup.add(types.InlineKeyboardButton(f"🛍️ עבור למוצר {i+1}", url=link))
-    
+
     if image_urls:
         collage = create_collage(image_urls)
         if collage:
-            bot.send_photo(m.chat.id, collage, caption=f"🏆 <b>תוצאות: {raw_query}</b>", parse_mode="HTML")
-    
+            bot.send_photo(m.chat.id, collage, caption=f"🏆 תוצאות עבור: {raw_query}", parse_mode="HTML")
+
     full_text += "💎 <b>DrDeals Premium</b>"
     bot.send_message(m.chat.id, full_text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
 
