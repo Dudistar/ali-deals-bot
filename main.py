@@ -24,6 +24,7 @@ TRACKING_ID = "DrDeals"
 ADMIN_ID = 173837076
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
+# הגדרת סשן יציב למניעת ניתוקים
 session = requests.Session()
 retry = Retry(connect=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
 adapter = HTTPAdapter(max_retries=retry)
@@ -65,17 +66,20 @@ def translate_to_hebrew(text):
 # 🧠 שלב 1: הבלש (Smart Query)
 # ==========================================
 def smart_query_optimizer(user_text):
+    """
+    מתרגם את כוונת המשתמש לאנגלית טכנית.
+    זה קריטי כדי שפונקציית הניקוד (Relevance Score) תעבוד מול אליאקספרס.
+    """
     if HAS_GEMINI:
         try:
             prompt = f"""
-            Task: Translate Hebrew search to AliExpress English keywords.
+            Task: Extract English keywords for AliExpress search.
             Input: "{user_text}"
             Rules:
-            1. Output ONLY the English product name.
-            2. IF user asks for "Drone" -> Output "Professional Camera Drone" (to avoid parts).
-            3. IF user asks for "Phone" -> Output "Smartphone Global Version".
-            4. Remove polite words.
-            Output: Keywords only.
+            1. Output ONLY product name keywords.
+            2. IF "Galaxy S23", add "Samsung". IF "14 Pro", add "iPhone".
+            3. No polite words.
+            Output: English Keywords Only.
             """
             response = model.generate_content(prompt)
             if response.text:
@@ -89,10 +93,10 @@ def smart_query_optimizer(user_text):
         return user_text
 
 # ==========================================
-# 🎣 שלב 2: הרשת (API)
+# 🎣 שלב 2: הרשת (API Fetcher)
 # ==========================================
 def get_ali_products(cleaned_query):
-    # חוזרים ל-50 מוצרים ליציבות
+    # מושכים 50 מוצרים כדי שיהיה מבחר לסינון הניקוד
     params = {
         'app_key': APP_KEY, 'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
         'sign_method': 'md5', 'method': 'aliexpress.affiliate.product.query',
@@ -113,58 +117,100 @@ def get_ali_products(cleaned_query):
     except: return []
 
 # ==========================================
-# 💎 שלב 3: הסלקטור (Strict Filter)
+# 📊 תוספת חדשה: חישוב ציון רלוונטיות
+# ==========================================
+def calculate_relevance_score(title, query_words):
+    """
+    נותן ציון לכל מוצר:
+    +2 נקודות על כל מילה מהחיפוש שמופיעה בכותרת.
+    +1 נקודה אם הכותרת קצרה ואיכותית (פחות מ-12 מילים).
+    """
+    score = 0
+    title_lower = title.lower()
+    
+    for w in query_words:
+        if w in title_lower:
+            score += 2
+            
+    # בונוס לכותרות נקיות (בדרך כלל מותגים אמיתיים ולא זיופים עם כותרת באורך הגלות)
+    if len(title_lower.split()) < 12:
+        score += 1
+        
+    return score
+
+# ==========================================
+# 💎 שלב 3: הסלקטור המשולב (Score + Median + AI)
 # ==========================================
 def filter_candidates(products, query_en):
     if not products: return []
     
-    # --- רשימה שחורה טכנית (נגד חלקי חילוף) ---
-    # אלו המילים שהפילו אותנו (VTX, מנוע, בקר טיסה)
-    tech_blacklist = [
-        "vtx", "flight controller", "esc ", "motor", "propeller", 
-        "frame kit", "receiver", "antenna", "module", "spare part",
-        "sticker", "screw", "case", "film", "strap"
-    ]
+    # פירוק השאילתה למילים לטובת הניקוד
+    query_words = query_en.lower().split()
     
-    clean_products = []
+    scored_products = []
     prices = []
     
+    # 1. מעבר ראשון: מתן ציונים ואיסוף מחירים
     for p in products:
-        title = p.get('product_title', '').lower()
+        title = p.get('product_title', '')
         price = safe_float(p.get('target_sale_price', 0))
         
-        # זריקה מיידית אם זה חלק טכני
-        if any(bad in title for bad in tech_blacklist): continue
+        if price <= 0: continue
         
-        if price > 0:
-            clean_products.append(p)
-            prices.append(price)
+        # חישוב הציון
+        score = calculate_relevance_score(title, query_words)
+        
+        # אנחנו שומרים את המוצר יחד עם הציון שלו
+        # מבנה: (ציון, מחיר, מוצר)
+        scored_products.append({'p': p, 'score': score, 'price': price})
+        prices.append(price)
 
-    if not clean_products: return []
+    if not scored_products: return []
 
-    # סינון מתמטי (רק אם יש מספיק נתונים)
-    if len(prices) > 5:
-        median_price = statistics.median(prices)
-        threshold = median_price * 0.3
-        clean_products = [p for p in clean_products if safe_float(p.get('target_sale_price', 0)) >= threshold]
+    # 2. סינון לפי ניקוד מינימלי
+    # אם המוצר לא מכיל אף מילה מהחיפוש (ציון 0), הוא עף.
+    # אנחנו רוצים לפחות התאמה אחת.
+    high_score_products = [item for item in scored_products if item['score'] >= 2]
+    
+    # אם הסינון היה אגרסיבי מידי ונשארנו בלי כלום, נתפשר על ציון נמוך יותר
+    if not high_score_products:
+        high_score_products = scored_products
 
-    clean_products.sort(key=lambda x: safe_float(x.get('target_sale_price', 0)), reverse=True)
-    candidates = clean_products[:20]
+    # 3. סינון לפי מחיר חציוני (להעיף זבל זול)
+    # מחשבים חציון רק על המוצרים הרלוונטיים
+    relevant_prices = [item['price'] for item in high_score_products]
+    if len(relevant_prices) > 3:
+        median_price = statistics.median(relevant_prices)
+        threshold = median_price * 0.3 # רף תחתון
+        
+        # משאירים רק מוצרים שעוברים את רף המחיר
+        final_candidates = [item['p'] for item in high_score_products if item['price'] >= threshold]
+    else:
+        final_candidates = [item['p'] for item in high_score_products]
+    
+    # אם נשארנו בלי כלום אחרי סינון מחיר, נחזיר את הרלוונטיים לפני סינון המחיר
+    if not final_candidates:
+        final_candidates = [item['p'] for item in high_score_products]
 
-    if not HAS_GEMINI: return candidates[:4]
+    # מיון לפי מחיר (מהיקר לזול) - ההנחה היא שהמוצר האמיתי יקר יותר
+    final_candidates.sort(key=lambda x: safe_float(x.get('target_sale_price', 0)), reverse=True)
+    
+    # לוקחים את ה-20 הטובים ביותר ל-AI
+    top_20 = final_candidates[:20]
 
-    # --- סינון AI נגד קומפוננטים ---
-    list_text = "\n".join([f"ID {i}: {p['product_title']} (Price: {p.get('target_sale_price', '0')})" for i, p in enumerate(candidates)])
+    if not HAS_GEMINI: return top_20[:4]
+
+    # 4. הבורר הסופי: AI
+    list_text = "\n".join([f"ID {i}: {p['product_title']} (Price: {p.get('target_sale_price', '0')})" for i, p in enumerate(top_20)])
     
     prompt = f"""
     User Query: "{query_en}"
-    Task: Find the COMPLETE UNIT, reject PARTS.
+    Task: Select the BEST MAIN PRODUCTS.
     
     RULES:
-    1. REJECT COMPONENTS: If user wants "Drone", REJECT "VTX", "Motor", "Frame", "Transmitter", "ESC".
-       - Example: "Rush Tank VTX" is a PART. REJECT IT.
-    2. REJECT ACCESSORIES: Reject cases, straps, cables.
-    3. PRICE LOGIC: A Drone costs $50+. A VTX costs $30. Know the difference.
+    1. RELEVANCE: Ensure the item matches the query exactly.
+    2. NO PARTS: Reject "Case", "Strap", "Battery" if user wants the Device.
+    3. PRICE: Reject suspicious low prices.
     
     List:
     {list_text}
@@ -174,13 +220,13 @@ def filter_candidates(products, query_en):
     try:
         response = model.generate_content(prompt)
         ids = [int(s) for s in re.findall(r'\b\d+\b', response.text)]
-        final = [candidates[i] for i in ids if i < len(candidates)]
-        return final[:4] if final else candidates[:4]
+        final = [top_20[i] for i in ids if i < len(top_20)]
+        return final[:4] if final else top_20[:4]
     except:
-        return candidates[:4]
+        return top_20[:4]
 
 # ==========================================
-# 🛠️ כלי עזר
+# 🛠️ כלי עזר (Link, Collage)
 # ==========================================
 def get_short_link(raw_url):
     if not raw_url: return None
@@ -241,9 +287,9 @@ def notify_admin(user, query):
 @bot.message_handler(commands=['start'])
 def start(m):
     welcome_msg = (
-        "✨ <b>ברוכים הבאים ל-DrDeals Premium</b> 💎\n\n"
+        "✨ <b>ברוכים הבאים ל-DrDeals Premium</b> | הדור הבא של הקניות 💎\n\n"
         "נעים להכיר, אני עוזר הקניות האישי שלכם.\n"
-        "המערכת שלי יודעת לסנן אביזרים וחלקי חילוף ולמצוא את המוצר האמיתי.\n\n"
+        "אני משתמש באלגוריתם דירוג חכם 📊 כדי למצוא לכם את המוצר המדויק.\n\n"
         "👇 <b>מה תרצו לחפש היום? (כתבו 'חפש לי...')</b>"
     )
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
@@ -260,7 +306,12 @@ def start(m):
 
 @bot.message_handler(commands=['help'])
 def help_command(m):
-    bot.send_message(m.chat.id, "💡 התחילו ב-**'חפש לי'**.", parse_mode="HTML")
+    help_text = "💎 <b>טיפ:</b> כתבו **'חפש לי'** ואת שם המוצר המדויק."
+    bot.send_message(m.chat.id, help_text, parse_mode="HTML")
+
+@bot.message_handler(func=lambda m: "עזרה" in m.text)
+def handle_help_text(m):
+    help_command(m)
 
 @bot.message_handler(func=lambda m: True)
 def handle_text(m):
@@ -271,23 +322,26 @@ def handle_text(m):
     raw_query = m.text.replace("חפש לי", "").strip()
     notify_admin(m.from_user, raw_query)
     
-    msg = bot.send_message(m.chat.id, f"🔍 <b>בודק: {raw_query}...</b>", parse_mode="HTML")
+    msg = bot.send_message(m.chat.id, f"🔍 <b>מנתח בקשה: {raw_query}...</b>", parse_mode="HTML")
     
     query_en = smart_query_optimizer(raw_query)
+    
+    # עדכון סטטוס למשתמש
+    bot.edit_message_text(f"📊 <b>סורק ומדרג תוצאות עבור: {query_en}...</b>", m.chat.id, msg.message_id, parse_mode="HTML")
+
     products = get_ali_products(query_en)
     if not products: products = get_ali_products(raw_query)
 
     if not products:
-        bot.edit_message_text("❌ לא נמצאו מוצרים.", m.chat.id, msg.message_id)
+        bot.edit_message_text("❌ לא נמצאו מוצרים. נסה חיפוש אחר.", m.chat.id, msg.message_id)
         return
 
-    bot.edit_message_text(f"💎 <b>מסנן חלקי חילוף ואביזרים...</b>", m.chat.id, msg.message_id, parse_mode="HTML")
     final_list = filter_candidates(products, query_en)
     
     bot.delete_message(m.chat.id, msg.message_id)
 
     if not final_list:
-        bot.send_message(m.chat.id, "🤔 מצאתי רק אביזרים/חלקי חילוף ולא את המוצר השלם.")
+        bot.send_message(m.chat.id, "🤔 לא נמצאו מוצרים בדירוג רלוונטיות גבוה.")
         return
 
     image_urls = []
@@ -295,7 +349,12 @@ def handle_text(m):
     markup = types.InlineKeyboardMarkup(row_width=1)
     
     for i, p in enumerate(final_list):
-        title = translate_to_hebrew(p.get('product_title', 'Product'))
+        title_full = translate_to_hebrew(p.get('product_title', 'Product'))
+        if len(title_full) > 60:
+            title_display = title_full[:60].rsplit(' ', 1)[0] + "..."
+        else:
+            title_display = title_full
+
         price = safe_float(p.get('target_sale_price', 0))
         orig_price = safe_float(p.get('target_original_price', 0))
         link = get_short_link(p.get('product_detail_url'))
@@ -305,10 +364,11 @@ def handle_text(m):
         discount_txt = ""
         if orig_price > price:
             percent = int(((orig_price - price) / orig_price) * 100)
-            discount_txt = f" | 📉 <b>{percent}% הנחה</b>"
+            discount_txt = f" | 📉 <b>{percent}%</b>"
 
         image_urls.append(p.get('product_main_image_url'))
-        full_text += f"{i+1}. 🏅 <b>{title[:55]}...</b>\n💰 מחיר: <b>{price}₪</b>{discount_txt}\n🔗 {link}\n\n"
+        
+        full_text += f"{i+1}. 🏅 <b>{title_display}</b>\n💰 <b>{price}₪</b>{discount_txt}\n🔗 {link}\n\n"
         markup.add(types.InlineKeyboardButton(f"🛍️ מוצר {i+1}", url=link))
     
     if image_urls:
