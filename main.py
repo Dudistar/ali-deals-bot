@@ -146,23 +146,23 @@ def get_ali_products(cleaned_query, category_id=None):
 # ==========================================
 def basic_keyword_match(product_title, query_english):
     """
-    בדיקה גסה: האם מילה אחת לפחות מהחיפוש מופיעה בכותרת?
-    אם לא - זה כנראה הזבל של אליאקספרס (CarPlay וכו')
+    בדיקה קריטית: האם המילים מהחיפוש מופיעות בכותרת?
     """
     query_words = query_english.lower().split()
     title_lower = product_title.lower()
     
-    # מסננים מילים קצרות מידי (כמו "in", "for")
-    significant_words = [w for w in query_words if len(w) > 2]
+    # סינון מילים לא חשובות
+    significant_words = [w for w in query_words if len(w) > 3] # רק מילים מעל 3 אותיות
     
-    if not significant_words: return True # אם אין מילים משמעותיות, מעבירים
+    if not significant_words: return True 
     
-    # האם יש לפחות מילה אחת תואמת?
+    matches = 0
     for word in significant_words:
         if word in title_lower:
-            return True
+            matches += 1
             
-    return False
+    # חייב לפחות התאמה אחת משמעותית
+    return matches > 0
 
 # ==========================================
 # ✍️ שלב 3: העורך והמסנן (AI Rewrite)
@@ -170,15 +170,16 @@ def basic_keyword_match(product_title, query_english):
 def ai_filter_and_rewrite(products, user_query_hebrew, query_english):
     if not products: return []
     
-    # 1. סינון שפיות ראשוני (חדש!)
-    # זורק לפח כל מוצר שלא מכיל את מילת החיפוש בכותרת
+    # 1. סינון שפיות (Sanity Filter) - השלב שמונע את כלי העבודה
     sane_products = []
     for p in products:
         if basic_keyword_match(p.get('product_title', ''), query_english):
             sane_products.append(p)
-            
+    
+    # אם הכל היה זבל של אליאקספרס (כלי עבודה) - עוצרים כאן!
+    # לא מחזירים את הרשימה המקורית!
     if not sane_products:
-        return [] # אם הכל היה זבל, מחזירים כלום! לא מחזירים את המקורי!
+        return [] 
 
     # 2. סינון מחיר ומיון
     pre_filtered = []
@@ -197,7 +198,6 @@ def ai_filter_and_rewrite(products, user_query_hebrew, query_english):
             p['ai_title'] = translate_to_hebrew(p.get('product_title'))
         return candidates[:3]
 
-    # שליחה ל-AI
     items_str = ""
     for i, p in enumerate(candidates):
         items_str += f"Item {i}: {p.get('product_title')} | Price: {p.get('target_sale_price')}\n"
@@ -208,8 +208,7 @@ def ai_filter_and_rewrite(products, user_query_hebrew, query_english):
     
     Task:
     1. STRICT FILTER: Does the item MATCH the query?
-       - Query "Drone" -> Item "CarPlay" -> VALID: FALSE (CRITICAL!)
-       - Query "Drone" -> Item "Propeller" -> VALID: FALSE.
+       - Query "Coat" -> Item "Tool" -> VALID: FALSE.
     2. REWRITE: Write Hebrew title (max 10 words) + Emoji.
     
     Items:
@@ -237,14 +236,13 @@ def ai_filter_and_rewrite(products, user_query_hebrew, query_english):
         
         time.sleep(1.5)
         
-        # --- השינוי הקריטי כאן ---
-        # אם ה-AI החליט שהכל זבל, אנחנו מחזירים רשימה ריקה!
-        # לא מחזירים את candidates (הגיבוי שהביא לך את ה-CarPlay)
+        # אם ה-AI פסל את הכל - מחזירים רשימה ריקה!
+        # לא מפעילים גיבוי שמחזיר זבל.
         return final_list[:3]
         
     except Exception as e:
         logging.error(f"AI Error: {e}")
-        # במקרה של שגיאת קוד (לא שגיאת תוכן), נחזיר את הרשימה שעברה סינון שפיות
+        # במקרה של קריסת AI (טכנית), אנחנו סומכים על סינון השפיות שעשינו קודם
         for p in candidates[:3]:
              p['ai_title'] = translate_to_hebrew(p.get('product_title'))
         return candidates[:3]
@@ -356,8 +354,7 @@ def handle_text(m):
     bot.delete_message(m.chat.id, msg.message_id)
 
     if not final_list:
-        # הודעה ברורה במקום להציג שטויות
-        bot.send_message(m.chat.id, f"🛑 <b>עצרתי את התוצאות.</b>\nהמוצרים שמצאתי לא תאמו ב-100% לבקשה '{raw_query}', ולכן סיננתי אותם כדי לא להציג לך מוצרים לא קשורים.")
+        bot.send_message(m.chat.id, f"🛑 <b>לא נמצאו תוצאות מדויקות.</b>\nהמוצרים שנמצאו לא תאמו ב-100% לבקשה, ולכן סיננתי אותם כדי לא להציג תוצאות שגויות.")
         return
 
     image_urls = []
