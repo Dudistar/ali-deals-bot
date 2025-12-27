@@ -33,6 +33,7 @@ session.mount('http://', adapter)
 session.mount('https://', adapter)
 
 HAS_GEMINI = False
+model = None
 if GEMINI_API_KEY:
     try:
         import google.generativeai as genai
@@ -40,7 +41,7 @@ if GEMINI_API_KEY:
         model = genai.GenerativeModel('gemini-pro')
         HAS_GEMINI = True
     except Exception as e:
-        logging.error(f"Gemini init error: {e}")
+        logging.error(f"Gemini init failed: {e}")
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
@@ -72,44 +73,33 @@ def safe_float(value):
         return float(clean)
     except: return 0.0
 
-def translate_to_hebrew(text):
-    time.sleep(random.uniform(2, 4))  # השהייה אמיתית כדי להרגיש חכם
+def translate_to_hebrew(text, delay=2.5):
+    """תרגום לעברית עם זמן המתנה"""
+    time.sleep(delay)
     try:
         from deep_translator import GoogleTranslator
         return GoogleTranslator(source='auto', target='iw').translate(text)
-    except: return text
+    except Exception as e:
+        logging.error(f"Translation failed: {e}")
+        return text
 
 def generate_sign(params):
     s = APP_SECRET + ''.join([f"{k}{v}" for k, v in sorted(params.items())]) + APP_SECRET
     return hashlib.md5(s.encode('utf-8')).hexdigest().upper()
 
 # ==========================================
-# 🛑 פילטר רך (Flexible Guard)
-# ==========================================
-def keyword_guard(product_title, query_english):
-    title_lower = product_title.lower()
-    query_parts = query_english.lower().split()
-    significant_keywords = [w for w in query_parts if len(w) > 2]
-    if not significant_keywords: return True
-    # לפחות מילה אחת חייבת להתאים
-    for word in significant_keywords:
-        if word in title_lower:
-            return True
-    return False
-
-# ==========================================
 # 🧠 שלב 1: הבלש (Smart Query)
 # ==========================================
-def smart_query_optimizer(user_text):
-    time.sleep(random.uniform(2, 5))  # זמן ריאלי לחיפוש
-    if HAS_GEMINI:
+def smart_query_optimizer(user_text, delay=2.5):
+    time.sleep(delay)
+    if HAS_GEMINI and model:
         try:
             prompt = f"""
             Task: Translate Hebrew search to English Keywords.
             Input: "{user_text}"
             Rules:
             1. Output ONLY English.
-            2. "Coat" -> "Woman Coat".
+            2. Avoid parts or accessories.
             Output: Keywords only.
             """
             response = model.generate_content(prompt)
@@ -117,103 +107,122 @@ def smart_query_optimizer(user_text):
                 res = response.text.strip().replace('"', '')
                 if not any("\u0590" <= char <= "\u05EA" for char in res):
                     return res
-        except: pass
+        except Exception as e:
+            logging.error(f"Gemini smart query failed: {e}")
 
     try:
         from deep_translator import GoogleTranslator
         translated = GoogleTranslator(source='auto', target='en').translate(user_text)
         if translated and not any("\u0590" <= char <= "\u05EA" for char in translated):
             return translated
-    except: pass
+    except Exception as e:
+        logging.error(f"Fallback translation failed: {e}")
     return None
 
 # ==========================================
 # 🎣 שלב 2: הרשת (API Fetcher)
 # ==========================================
-def get_ali_products(cleaned_query, category_id=None):
+def get_ali_products(cleaned_query, category_id=None, delay=3.0):
+    """מחפש ב-AliExpress עם השהייה מלאכותית"""
     if not cleaned_query: return []
-    time.sleep(random.uniform(3, 6))  # השהייה להרגיש חיפוש אמיתי
-    
+    time.sleep(delay)
     params = {
         'app_key': APP_KEY, 'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
         'sign_method': 'md5', 'method': 'aliexpress.affiliate.product.query',
         'partner_id': 'top-autopilot', 'format': 'json', 'v': '2.0',
-        'keywords': cleaned_query,
+        'keywords': cleaned_query, 
         'target_currency': 'ILS', 'ship_to_country': 'IL',
-        'sort': 'LAST_VOLUME_DESC',
-        'page_size': '40',
+        'sort': 'LAST_VOLUME_DESC', 
+        'page_size': '50',
     }
     if category_id:
         params['category_ids'] = category_id
     params['sign'] = generate_sign(params)
-    
+
     try:
         response = session.post("https://api-sg.aliexpress.com/sync", data=params, timeout=15)
         data = response.json().get('aliexpress_affiliate_product_query_response', {}).get('resp_result', {}).get('result', {}).get('products', {}).get('product', [])
         if isinstance(data, dict): data = [data]
+        logging.info(f"AliExpress returned {len(data)} products for query '{cleaned_query}'")
         return data
-    except: return []
+    except Exception as e:
+        logging.error(f"AliExpress API failed: {e}")
+        return []
 
 # ==========================================
-# ✍️ שלב 3: העורך (AI + Strict Guard)
+# 🛑 פילטר חכם
 # ==========================================
-def ai_filter_and_rewrite(products, user_query_hebrew, query_english):
+def smart_filter(products, query_en):
+    """סינון חכם של מוצרים, לא זורק הכל"""
     if not products: return []
-    
-    # השהיה ל-AI
-    time.sleep(random.uniform(4, 7))
-    
-    sane_products = [p for p in products if keyword_guard(p.get('product_title', ''), query_english)]
-    if not sane_products: return []
-    
-    sane_products.sort(key=lambda x: safe_float(x.get('target_sale_price', 0)), reverse=True)
-    candidates = sane_products[:10]
 
-    if not HAS_GEMINI:
-        for p in candidates:
-            p['ai_title'] = translate_to_hebrew(p.get('product_title'))
-        return candidates[:3]
+    blacklist = [
+        "vtx", "motor", "esc", "frame", "receiver", "antenna",
+        "module", "spare part", "case", "strap", "screw", "film"
+    ]
+    clean_products = []
+    prices = []
 
-    items_str = ""
-    for i, p in enumerate(candidates):
-        items_str += f"Item {i}: {p.get('product_title')} | Price: {p.get('target_sale_price')}\n"
+    for p in products:
+        title = p.get('product_title', '').lower()
+        price = safe_float(p.get('target_sale_price', 0))
+        if any(bad in title for bad in blacklist): continue
+        if price > 0:
+            clean_products.append(p)
+            prices.append(price)
 
+    if not clean_products: return []
+
+    # סינון לפי מחיר יחסית למדיהן
+    if len(prices) > 5:
+        median_price = statistics.median(prices)
+        threshold = median_price * 0.3
+        clean_products = [p for p in clean_products if safe_float(p.get('target_sale_price', 0)) >= threshold]
+
+    clean_products.sort(key=lambda x: safe_float(x.get('target_sale_price', 0)), reverse=True)
+    return clean_products[:20]
+
+# ==========================================
+# ✍️ AI Rewrite / Final Selection
+# ==========================================
+def ai_finalize(products, user_query_hebrew, query_en, delay=4.0):
+    time.sleep(delay)
+    if not products: return []
+
+    if not HAS_GEMINI or not model:
+        for p in products[:4]:
+            p['ai_title'] = translate_to_hebrew(p.get('product_title'), delay=2)
+        return products[:4]
+
+    items_str = "\n".join([f"Item {i}: {p.get('product_title')} | Price: {p.get('target_sale_price')}" for i, p in enumerate(products[:10])])
     prompt = f"""
     Role: Product Curator.
     User Query: "{user_query_hebrew}"
-    Task:
-    1. FILTER: Check if product matches query.
-    2. REWRITE: Short Hebrew title with emoji.
+    Task: Filter correct products, rewrite short Hebrew title with emoji.
     Items:
     {items_str}
-    Output JSON ONLY:
-    [
-        {{"index": 0, "valid": true, "hebrew_title": "מעיל אלגנטי בצבע שמנת 🧥"}},
-        {{"index": 1, "valid": false}}
-    ]
+    Output JSON ONLY: [{"index":0,"valid":true,"hebrew_title":"Example"}]
     """
     try:
         response = model.generate_content(prompt)
-        text_resp = response.text.strip().replace("```json", "").replace("```", "")
-        ai_decisions = json.loads(text_resp)
-        final_list = []
-        for decision in ai_decisions:
-            if decision.get("valid"):
-                idx = decision.get("index")
-                if idx < len(candidates):
-                    product = candidates[idx]
-                    product['ai_title'] = decision.get("hebrew_title")
-                    final_list.append(product)
-        if not final_list:
-            for p in candidates[:3]:
-                p['ai_title'] = translate_to_hebrew(p.get('product_title'))
-            return candidates[:3]
-        return final_list[:3]
+        text_resp = response.text.strip().replace("```json","").replace("```","")
+        decisions = json.loads(text_resp)
+        final = []
+        for d in decisions:
+            if d.get("valid") and d.get("index") < len(products):
+                p = products[d.get("index")]
+                p['ai_title'] = d.get("hebrew_title")
+                final.append(p)
+        if not final:
+            for p in products[:3]:
+                p['ai_title'] = translate_to_hebrew(p.get('product_title'), delay=2)
+            return products[:3]
+        return final[:4]
     except Exception as e:
-        logging.error(f"AI Error: {e}")
-        for p in candidates[:3]:
-            p['ai_title'] = translate_to_hebrew(p.get('product_title'))
-        return candidates[:3]
+        logging.error(f"AI finalization failed: {e}")
+        for p in products[:3]:
+            p['ai_title'] = translate_to_hebrew(p.get('product_title'), delay=2)
+        return products[:3]
 
 # ==========================================
 # 🛠️ לינקים וקולאז'
@@ -229,7 +238,7 @@ def get_short_link(raw_url):
             'promotion_link_type': '0', 'source_values': clean_url, 'tracking_id': TRACKING_ID
         }
         params['sign'] = generate_sign(params)
-        resp = session.post("https://api-sg.aliexpress.com/sync", data=params, timeout=5).json()
+        resp = session.post("https://api-sg.aliexpress.com/sync", data=params, timeout=10).json()
         result = resp.get('aliexpress_affiliate_link_generate_response', {}).get('resp_result', {}).get('result', {}).get('promotion_links', {}).get('promotion_link', [])
         if result: return result[0].get('promotion_short_link') or result[0].get('promotion_link')
     except: pass
@@ -238,26 +247,19 @@ def get_short_link(raw_url):
 def create_collage(image_urls):
     try:
         images = []
-        for url in image_urls[:3]:
+        for url in image_urls[:4]:
             try:
                 r = session.get(url, timeout=5)
                 img = Image.open(io.BytesIO(r.content)).convert('RGB').resize((500,500))
                 images.append(img)
-            except: images.append(Image.new('RGB', (500,500), color='#FFFFFF'))
-        while len(images) < 3: images.append(Image.new('RGB', (500,500), color='#FFFFFF'))
+            except:
+                images.append(Image.new('RGB', (500,500), color='#FFFFFF'))
+        while len(images) < 4: images.append(Image.new('RGB', (500,500), color='#FFFFFF'))
 
-        collage = Image.new('RGB', (1000, 1000), 'white')
-        collage.paste(images[0].resize((1000, 500)), (0, 0))
-        collage.paste(images[1].resize((500, 500)), (0, 500))
-        collage.paste(images[2].resize((500, 500)), (500, 500))
-
-        draw = ImageDraw.Draw(collage)
-        positions = [(50,50), (50,550), (550,550)]
+        collage = Image.new('RGB', (1000,1000), 'white')
+        positions = [(0,0),(500,0),(0,500),(500,500)]
         for i, pos in enumerate(positions):
-            x, y = pos
-            draw.ellipse((x, y, x+60, y+60), fill="#FFD700", outline="black", width=3)
-            draw.text((x+20, y+10), str(i+1), fill="black", font_size=40)
-
+            collage.paste(images[i], pos)
         output = io.BytesIO()
         collage.save(output, format='JPEG', quality=85)
         output.seek(0)
@@ -279,8 +281,9 @@ def notify_admin(user, query):
 def start(m):
     welcome_msg = (
         "✨ <b>ברוכים הבאים ל-DrDeals Premium</b> 💎\n\n"
-        "הבוט הזה מחפש בקפידה כל מוצר.\n"
-        "👇 <b>נסו אותו: 'חפש לי...'</b>"
+        "כאן החיפוש מקצועי ומעמיק. כל תוצאה עוברת בדיקה AI וסינון.\n"
+        "⌛ זהירות: החיפוש לוקח זמן – הבוט עובד ביסודיות.\n"
+        "👇 <b>כתבו: 'חפש לי...' כדי להתחיל</b>"
     )
     bot.send_message(m.chat.id, welcome_msg, parse_mode="HTML")
 
@@ -292,28 +295,24 @@ def handle_text(m):
 
     raw_query = m.text.replace("חפש לי", "").strip()
     notify_admin(m.from_user, raw_query)
-
     bot.send_chat_action(m.chat.id, 'typing')
     msg = bot.send_message(m.chat.id, f"🕵️‍♂️ מחפש ביסודיות: {raw_query}...", parse_mode="HTML")
 
     cat_id = get_category_id(raw_query)
-    query_en = smart_query_optimizer(raw_query)
+    query_en = smart_query_optimizer(raw_query, delay=4)
+
     if not query_en:
         bot.edit_message_text("⚠️ תקלה בתרגום. נסה שוב.", m.chat.id, msg.message_id)
         return
 
-    bot.edit_message_text(f"🌏 סורק מאגרים בינלאומיים...", m.chat.id, msg.message_id, parse_mode="HTML")
-    products = get_ali_products(query_en, category_id=cat_id)
-    if not products:
-        bot.edit_message_text("❌ לא נמצאו מוצרים תואמים.", m.chat.id, msg.message_id)
-        return
+    products = get_ali_products(query_en, category_id=cat_id, delay=5)
+    filtered = smart_filter(products, query_en)
+    final_list = ai_finalize(filtered, raw_query, query_en, delay=6)
 
-    bot.edit_message_text(f"🧠 AI מסנן ומסדר את המוצרים...", m.chat.id, msg.message_id, parse_mode="HTML")
-    final_list = ai_filter_and_rewrite(products, raw_query, query_en)
     bot.delete_message(m.chat.id, msg.message_id)
 
     if not final_list:
-        bot.send_message(m.chat.id, f"🛑 לא נמצאו תוצאות מדויקות.\nהמסנן הסיר מוצרים לא רלוונטיים.")
+        bot.send_message(m.chat.id, f"🛑 <b>לא נמצאו תוצאות מדויקות.</b>\nהמוצרים שנמצאו לא עברו את הסינון החכם.")
         return
 
     image_urls = []
@@ -321,17 +320,19 @@ def handle_text(m):
     markup = types.InlineKeyboardMarkup(row_width=1)
 
     for i, p in enumerate(final_list):
-        title = p.get('ai_title', translate_to_hebrew(p.get('product_title')))
+        title = p.get('ai_title', translate_to_hebrew(p.get('product_title'), delay=2))
         price = safe_float(p.get('target_sale_price', 0))
         orig_price = safe_float(p.get('target_original_price', 0))
         sales = p.get('last_volume', 0)
         link = get_short_link(p.get('product_detail_url'))
+
         if not link: continue
 
         discount_txt = ""
         if orig_price > price:
             percent = int(((orig_price - price) / orig_price) * 100)
             if percent > 5: discount_txt = f" | 📉 <b>{percent}% הנחה</b>"
+
         sales_txt = ""
         if sales and int(sales) > 10: sales_txt = f" | 📦 <b>{sales}+ נרכשו</b>"
 
