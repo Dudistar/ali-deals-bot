@@ -10,10 +10,9 @@ import logging
 import json
 import random
 from telebot import types
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 from requests.adapters import HTTPAdapter
 from requests.packages.urllib3.util.retry import Retry
-from difflib import SequenceMatcher
 
 # ==========================================
 # ⚙️ הגדרות מערכת
@@ -40,7 +39,8 @@ if GEMINI_API_KEY:
         genai.configure(api_key=GEMINI_API_KEY)
         model = genai.GenerativeModel('gemini-pro')
         HAS_GEMINI = True
-    except: pass
+    except Exception as e:
+        logging.error(f"Gemini init error: {e}")
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
@@ -73,6 +73,7 @@ def safe_float(value):
     except: return 0.0
 
 def translate_to_hebrew(text):
+    time.sleep(random.uniform(2, 4))  # השהייה אמיתית כדי להרגיש חכם
     try:
         from deep_translator import GoogleTranslator
         return GoogleTranslator(source='auto', target='iw').translate(text)
@@ -83,23 +84,24 @@ def generate_sign(params):
     return hashlib.md5(s.encode('utf-8')).hexdigest().upper()
 
 # ==========================================
-# 🛑 פילטר חכם (Fuzzy Guard)
+# 🛑 פילטר רך (Flexible Guard)
 # ==========================================
-def fuzzy_match(title, query, threshold=0.45):
-    """ בודק התאמה בין כותרת מוצר למילת חיפוש """
-    title_lower = title.lower()
-    query_words = query.lower().split()
-    matches = [SequenceMatcher(None, w, title_lower).ratio() for w in query_words if len(w) > 2]
-    return any(m >= threshold for m in matches)
-
 def keyword_guard(product_title, query_english):
-    return fuzzy_match(product_title, query_english, threshold=0.45)
+    title_lower = product_title.lower()
+    query_parts = query_english.lower().split()
+    significant_keywords = [w for w in query_parts if len(w) > 2]
+    if not significant_keywords: return True
+    # לפחות מילה אחת חייבת להתאים
+    for word in significant_keywords:
+        if word in title_lower:
+            return True
+    return False
 
 # ==========================================
 # 🧠 שלב 1: הבלש (Smart Query)
 # ==========================================
 def smart_query_optimizer(user_text):
-    time.sleep(random.uniform(1.5, 3.0))  # Give time for "thinking"
+    time.sleep(random.uniform(2, 5))  # זמן ריאלי לחיפוש
     if HAS_GEMINI:
         try:
             prompt = f"""
@@ -130,40 +132,42 @@ def smart_query_optimizer(user_text):
 # ==========================================
 def get_ali_products(cleaned_query, category_id=None):
     if not cleaned_query: return []
-    time.sleep(random.uniform(1.5, 3.0))
+    time.sleep(random.uniform(3, 6))  # השהייה להרגיש חיפוש אמיתי
+    
     params = {
         'app_key': APP_KEY, 'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
         'sign_method': 'md5', 'method': 'aliexpress.affiliate.product.query',
         'partner_id': 'top-autopilot', 'format': 'json', 'v': '2.0',
-        'keywords': cleaned_query, 
+        'keywords': cleaned_query,
         'target_currency': 'ILS', 'ship_to_country': 'IL',
-        'sort': 'LAST_VOLUME_DESC', 
-        'page_size': '50', 
+        'sort': 'LAST_VOLUME_DESC',
+        'page_size': '40',
     }
     if category_id:
         params['category_ids'] = category_id
     params['sign'] = generate_sign(params)
+    
     try:
-        response = session.post("https://api-sg.aliexpress.com/sync", data=params, timeout=10)
+        response = session.post("https://api-sg.aliexpress.com/sync", data=params, timeout=15)
         data = response.json().get('aliexpress_affiliate_product_query_response', {}).get('resp_result', {}).get('result', {}).get('products', {}).get('product', [])
         if isinstance(data, dict): data = [data]
         return data
     except: return []
 
 # ==========================================
-# ✍️ שלב 3: העורך (AI Rewrite + Strict Guard)
+# ✍️ שלב 3: העורך (AI + Strict Guard)
 # ==========================================
 def ai_filter_and_rewrite(products, user_query_hebrew, query_english):
     if not products: return []
-
+    
+    # השהיה ל-AI
+    time.sleep(random.uniform(4, 7))
+    
     sane_products = [p for p in products if keyword_guard(p.get('product_title', ''), query_english)]
     if not sane_products: return []
-
-    pre_filtered = [p for p in sane_products if safe_float(p.get('target_sale_price', 0)) > 0]
-    pre_filtered.sort(key=lambda x: safe_float(x.get('target_sale_price', 0)), reverse=True)
-    candidates = pre_filtered[:10]
-
-    time.sleep(random.uniform(2, 4))  # simulate AI thinking
+    
+    sane_products.sort(key=lambda x: safe_float(x.get('target_sale_price', 0)), reverse=True)
+    candidates = sane_products[:10]
 
     if not HAS_GEMINI:
         for p in candidates:
@@ -178,13 +182,13 @@ def ai_filter_and_rewrite(products, user_query_hebrew, query_english):
     Role: Product Curator.
     User Query: "{user_query_hebrew}"
     Task:
-    1. FILTER: Correct product? (Coat=Coat)
-    2. REWRITE: short Hebrew title (max 10 words) + emoji
+    1. FILTER: Check if product matches query.
+    2. REWRITE: Short Hebrew title with emoji.
     Items:
     {items_str}
     Output JSON ONLY:
     [
-        {{"index": 0, "valid": true, "hebrew_title": "מעיל אלגנטי בצבע קרם 🧥"}},
+        {{"index": 0, "valid": true, "hebrew_title": "מעיל אלגנטי בצבע שמנת 🧥"}},
         {{"index": 1, "valid": false}}
     ]
     """
@@ -236,7 +240,7 @@ def create_collage(image_urls):
         images = []
         for url in image_urls[:3]:
             try:
-                r = session.get(url, timeout=3)
+                r = session.get(url, timeout=5)
                 img = Image.open(io.BytesIO(r.content)).convert('RGB').resize((500,500))
                 images.append(img)
             except: images.append(Image.new('RGB', (500,500), color='#FFFFFF'))
@@ -252,7 +256,8 @@ def create_collage(image_urls):
         for i, pos in enumerate(positions):
             x, y = pos
             draw.ellipse((x, y, x+60, y+60), fill="#FFD700", outline="black", width=3)
-            draw.text((x+20, y+10), str(i+1), fill="black", font=None)
+            draw.text((x+20, y+10), str(i+1), fill="black", font_size=40)
+
         output = io.BytesIO()
         collage.save(output, format='JPEG', quality=85)
         output.seek(0)
@@ -274,8 +279,8 @@ def notify_admin(user, query):
 def start(m):
     welcome_msg = (
         "✨ <b>ברוכים הבאים ל-DrDeals Premium</b> 💎\n\n"
-        "הבוט הזה עובד בקפדנות: או מוצר אמיתי או מסנן.\n"
-        "👇 <b>נסו: 'חפש לי...'</b>"
+        "הבוט הזה מחפש בקפידה כל מוצר.\n"
+        "👇 <b>נסו אותו: 'חפש לי...'</b>"
     )
     bot.send_message(m.chat.id, welcome_msg, parse_mode="HTML")
 
@@ -290,7 +295,6 @@ def handle_text(m):
 
     bot.send_chat_action(m.chat.id, 'typing')
     msg = bot.send_message(m.chat.id, f"🕵️‍♂️ מחפש ביסודיות: {raw_query}...", parse_mode="HTML")
-    time.sleep(2)
 
     cat_id = get_category_id(raw_query)
     query_en = smart_query_optimizer(raw_query)
@@ -299,19 +303,17 @@ def handle_text(m):
         return
 
     bot.edit_message_text(f"🌏 סורק מאגרים בינלאומיים...", m.chat.id, msg.message_id, parse_mode="HTML")
-    time.sleep(2)
     products = get_ali_products(query_en, category_id=cat_id)
     if not products:
         bot.edit_message_text("❌ לא נמצאו מוצרים תואמים.", m.chat.id, msg.message_id)
         return
 
-    bot.edit_message_text(f"🧠 ה-AI כותב תיאורים ומסנן זיופים...", m.chat.id, msg.message_id, parse_mode="HTML")
-    time.sleep(2)
+    bot.edit_message_text(f"🧠 AI מסנן ומסדר את המוצרים...", m.chat.id, msg.message_id, parse_mode="HTML")
     final_list = ai_filter_and_rewrite(products, raw_query, query_en)
     bot.delete_message(m.chat.id, msg.message_id)
 
     if not final_list:
-        bot.send_message(m.chat.id, f"🛑 לא נמצאו תוצאות מדויקות.\nמסנן הברזל עבד ומנע הצגת מוצרים לא רלוונטיים.")
+        bot.send_message(m.chat.id, f"🛑 לא נמצאו תוצאות מדויקות.\nהמסנן הסיר מוצרים לא רלוונטיים.")
         return
 
     image_urls = []
@@ -340,7 +342,7 @@ def handle_text(m):
     if image_urls:
         collage = create_collage(image_urls)
         if collage:
-            bot.send_photo(m.chat.id, collage, caption=f"🏆 תוצאות עבור: {raw_query}", parse_mode="HTML")
+            bot.send_photo(m.chat.id, collage, caption=f"🏆 <b>תוצאות: {raw_query}</b>", parse_mode="HTML")
 
     full_text += "💎 <b>DrDeals Premium</b>"
     bot.send_message(m.chat.id, full_text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
