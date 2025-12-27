@@ -1,5 +1,5 @@
 # ==========================================
-# DrDeals Premium – UNIVERSAL FIX
+# DrDeals Premium – The "Elma" Competitor
 # ==========================================
 import telebot
 import requests
@@ -7,6 +7,7 @@ import time
 import hashlib
 import logging
 import io
+import re
 from telebot import types
 from PIL import Image, ImageDraw
 from requests.adapters import HTTPAdapter
@@ -30,58 +31,23 @@ adapter = HTTPAdapter(max_retries=retry)
 session.mount('https://', adapter)
 
 # ==========================================
-# 🧠 המוח המרכזי: הגדרות לכל מוצר
+# 🧠 מילון צבעים וסגנונות (לדיוק מקסימלי)
 # ==========================================
-# כאן אנחנו מגדירים לכל מוצר:
-# 1. איך קוראים לו באנגלית (keyword)
-# 2. מה הקטגוריה שלו (cat_id) - כדי למנוע מברגים
-# 3. מה *אסור* שיהיה בו (ban_words)
-# 4. מה המינימום מחיר (min_price) - למנוע זבל
-
-PRODUCT_RULES = {
-    "רחפן": {
-        "en": "Professional Drone 4k",
-        "cat_id": "200002649",
-        "ban_words": ["propeller", "battery", "landing", "pad", "case", "cable", "motor", "arm"],
-        "min_price": "100"
-    },
-    "מעיל": {
-        "en": "Women Elegant Coat",
-        "cat_id": "200001901",
-        "ban_words": ["raincoat", "plastic", "hanger", "hook", "sport", "yoga", "hiking"],
-        "min_price": "50"
-    },
-    "שעון": {
-        "en": "Smart Watch",
-        "cat_id": "200000095",
-        "ban_words": ["strap", "band", "screen protector", "case", "film", "charger"],
-        "min_price": "50"
-    },
-    "אוזניות": {
-        "en": "Wireless Headphones Bluetooth",
-        "cat_id": "63705",
-        "ban_words": ["case", "silicone", "cable", "pad", "tips", "cleaner"],
-        "min_price": "30"
-    },
-    "טלפון": {
-        "en": "Smartphone Global Version",
-        "cat_id": "2000023",
-        "ban_words": ["case", "cover", "screen", "glass", "holder", "cable"],
-        "min_price": "300"
-    },
-    "מצלמה": {
-        "en": "Digital Camera",
-        "cat_id": "200002412",
-        "ban_words": ["tripod", "bag", "lens cap", "strap", "battery"],
-        "min_price": "150"
-    }
+COLORS = {
+    'שמנת': 'Beige', 'בז': 'Beige', 'קרם': 'Beige', 'חול': 'Khaki',
+    'לבן': 'White', 'שחור': 'Black', 'אדום': 'Red', 'כחול': 'Blue',
+    'ירוק': 'Green', 'ורוד': 'Pink', 'חום': 'Brown', 'אפור': 'Grey'
 }
 
-# מילות מפתח לצבעים (לזיהוי ושיפור חיפוש)
-COLORS = {
-    'שמנת': 'Beige', 'בז': 'Beige', 'קרם': 'Beige',
-    'לבן': 'White', 'שחור': 'Black', 'אדום': 'Red',
-    'כחול': 'Blue', 'ירוק': 'Green', 'ורוד': 'Pink'
+# רשימת מילים שחובה שיהיו במוצר (Whitelist)
+# אם המשתמש מחפש "מעיל", המוצר חייב להכיל אחת מהמילים באנגלית
+PRODUCT_VALIDATORS = {
+    'מעיל': ['coat', 'jacket', 'parka', 'trench', 'blazer', 'outerwear'],
+    'רחפן': ['drone', 'quadcopter', 'uav'],
+    'שעון': ['watch', 'smartwatch'],
+    'אוזניות': ['headphone', 'earphone', 'headset', 'earbuds'],
+    'תיק': ['bag', 'handbag', 'purse', 'wallet', 'backpack'],
+    'נעליים': ['shoe', 'sneaker', 'boot', 'sandal', 'heel']
 }
 
 # ==========================================
@@ -91,7 +57,8 @@ def generate_sign(params):
     s = APP_SECRET + ''.join(f"{k}{v}" for k, v in sorted(params.items())) + APP_SECRET
     return hashlib.md5(s.encode()).hexdigest().upper()
 
-def get_ali_products(query, cat_id=None, min_price="10"):
+def get_ali_products(query, min_price="20"):
+    # חיפוש רחב ומקיף
     params = {
         "app_key": APP_KEY,
         "method": "aliexpress.affiliate.product.query",
@@ -103,13 +70,10 @@ def get_ali_products(query, cat_id=None, min_price="10"):
         "keywords": query,
         "target_currency": "ILS",
         "ship_to_country": "IL",
-        "sort": "LAST_VOLUME_DESC",
+        "sort": "LAST_VOLUME_DESC", # מיון לפי פופולריות
         "page_size": "50",
         "min_sale_price": min_price
     }
-    if cat_id:
-        params["category_ids"] = cat_id
-    
     params["sign"] = generate_sign(params)
 
     try:
@@ -121,25 +85,45 @@ def get_ali_products(query, cat_id=None, min_price="10"):
     except: return []
 
 # ==========================================
-# 🧹 המסנן האוניברסלי
+# 🧹 המנקה והמסנן (The Processor)
 # ==========================================
-def universal_filter(products, ban_list):
-    clean = []
-    # מילים שאסורות בכל המצבים
-    global_ban = ["screw", "repair", "connector", "adapter", "toy", "part", "accessory"]
+def clean_title_hebrew(title_en):
+    """
+    פונקציה שמנסה לחקות את ה-AI של המתחרה.
+    היא לוקחת כותרת ארוכה ומבולגנת ומשאירה רק את ה"בשר".
+    """
+    # 1. תרגום
+    try:
+        title_he = GoogleTranslator(source='auto', target='iw').translate(title_en)
+    except:
+        return title_en
+
+    # 2. ניקוי מילים שיווקיות מיותרות
+    garbage = ["חדש", "2024", "2025", "משלוח חינם", "הגעה", "אופנה", "נשים", "גברים", "יוקרה", "באיכות גבוהה", "טרנד", "סגנון"]
+    for word in garbage:
+        title_he = title_he.replace(word, "")
     
-    for p in products:
-        title = p.get("product_title", "").lower()
-        
-        # בדיקה 1: רשימה גלובלית
-        if any(bad in title for bad in global_ban): continue
-        
-        # בדיקה 2: רשימה ספציפית למוצר (אם יש)
-        if ban_list:
-            if any(bad in title for bad in ban_list): continue
-            
-        clean.append(p)
-    return clean
+    # 3. קיצור
+    words = title_he.split()
+    if len(words) > 8:
+        return " ".join(words[:8]) + "..."
+    return " ".join(words)
+
+def validate_product(product, original_query_he):
+    title_lower = product.get("product_title", "").lower()
+    
+    # 1. הגנה גלובלית (כלי עבודה)
+    global_ban = ["screw", "repair", "tool", "connector", "adapter", "pipe", "accessory", "part", "kit"]
+    if any(bad in title_lower for bad in global_ban): return False
+
+    # 2. אימות ספציפי (Whitelist)
+    # אם המשתמש חיפש "מעיל", אנחנו מוודאים שכתוב Coat/Jacket
+    for key, valid_words in PRODUCT_VALIDATORS.items():
+        if key in original_query_he:
+            if not any(good in title_lower for good in valid_words):
+                return False # זה לא המוצר שהמשתמש ביקש!
+    
+    return True
 
 # ==========================================
 # 🔗 לינקים וקולאז'
@@ -162,16 +146,30 @@ def get_short_link(url):
 
 def create_collage(urls):
     imgs = []
-    for u in urls[:3]:
+    for u in urls[:4]: # ננסה 4 תמונות כמו המתחרה
         try:
             img = Image.open(io.BytesIO(session.get(u, timeout=5).content)).resize((500,500))
         except: img = Image.new("RGB",(500,500),"white")
         imgs.append(img)
-    while len(imgs)<3: imgs.append(Image.new("RGB",(500,500),"white"))
+    
+    # השלמה ל-4
+    while len(imgs)<4: imgs.append(Image.new("RGB",(500,500),"white"))
+    
+    # יצירת קולאז' 2x2
     canvas = Image.new("RGB",(1000,1000),"white")
-    canvas.paste(imgs[0].resize((1000,500)),(0,0))
-    canvas.paste(imgs[1],(0,500))
-    canvas.paste(imgs[2],(500,500))
+    canvas.paste(imgs[0],(0,0))
+    canvas.paste(imgs[1],(500,0))
+    canvas.paste(imgs[2],(0,500))
+    canvas.paste(imgs[3],(500,500))
+    
+    # מספור
+    draw = ImageDraw.Draw(canvas)
+    # מיקומים: שמאל-למעלה, ימין-למעלה, שמאל-למטה, ימין-למטה
+    positions = [(30,30), (530,30), (30,530), (530,530)]
+    for i, (x,y) in enumerate(positions):
+        draw.ellipse((x,y,x+70,y+70),fill="#FFD700",outline="black",width=3)
+        draw.text((x+25,y+15),str(i+1),fill="black", font_size=40) # פונט גדול יותר
+
     out = io.BytesIO()
     canvas.save(out,"JPEG",quality=85)
     out.seek(0)
@@ -184,81 +182,81 @@ def create_collage(urls):
 def handler(m):
     if not m.text.startswith("חפש לי"): return
 
-    user_input = m.text.replace("חפש לי","").strip()
+    query_he = m.text.replace("חפש לי","").strip()
+    
+    # שלב 1: חיווי מיידי (כמו המתחרה)
+    msg = bot.reply_to(m, f"🔎 מחפש את הטובים ביותר עבור: {query_he}...")
     bot.send_chat_action(m.chat.id, "typing")
 
-    # 1. זיהוי מוצר מתוך הטקסט
-    detected_rule = None
-    rule_name = None
-    
-    # בדיקה איזו מילת מפתח (רחפן, מעיל...) מופיעה בטקסט
-    for key, rule in PRODUCT_RULES.items():
-        if key in user_input:
-            detected_rule = rule
-            rule_name = key
+    # שלב 2: עיבוד חכם של השאילתה
+    color_en = ""
+    for heb_col, eng_col in COLORS.items():
+        if heb_col in query_he:
+            color_en = eng_col
             break
-    
-    # 2. בניית השאילתה
-    query_en = ""
-    cat_id = None
-    ban_list = []
-    min_price = "10"
-
-    if detected_rule:
-        # מקרה א': זיהינו מוצר מוכר (רחפן, מעיל...)
-        # בודקים אם יש צבע בבקשה
-        color_en = ""
-        for heb_col, eng_col in COLORS.items():
-            if heb_col in user_input:
-                color_en = eng_col
-                break
+            
+    # תרגום בסיסי + הוספת צבע
+    try:
+        base_en = GoogleTranslator(source='auto', target='en').translate(query_he)
+    except:
+        base_en = query_he
         
-        # בונים שאילתה: "Women Elegant Coat Beige"
-        query_en = f"{detected_rule['en']} {color_en}".strip()
-        cat_id = detected_rule['cat_id']
-        ban_list = detected_rule['ban_words']
-        min_price = detected_rule['min_price']
-        
-        bot.reply_to(m, f"🔎 זיהיתי: {rule_name}. מחפש בקטגוריה המתאימה...")
-        
-    else:
-        # מקרה ב': חיפוש כללי (לא מוכר)
-        bot.reply_to(m, f"🔎 מחפש בכל אליאקספרס: {user_input}...")
-        try: query_en = GoogleTranslator(source='auto', target='en').translate(user_input)
-        except: query_en = user_input
+    final_query = f"{base_en} {color_en}".strip()
     
-    # 3. ביצוע החיפוש
-    products = get_ali_products(query_en, cat_id, min_price)
+    # שלב 3: משיכה (לוקח זמן...)
+    time.sleep(1.5) # השהייה מלאכותית כדי לתת תחושת "חשיבה"
+    products = get_ali_products(final_query)
     
-    # 4. סינון
-    clean_products = universal_filter(products, ban_list)
+    # שלב 4: סינון קפדני (The Enforcer)
+    valid_products = []
+    for p in products:
+        if validate_product(p, query_he):
+            valid_products.append(p)
     
-    # 5. הצגה
-    if not clean_products:
-        bot.send_message(m.chat.id, "🛑 לא נמצאו תוצאות איכותיות.")
+    if not valid_products:
+        bot.edit_message_text("🛑 לא מצאתי תוצאות שעומדות בסטנדרט האיכות (סיננתי מוצרים לא רלוונטיים).", m.chat.id, msg.message_id)
         return
 
-    top_3 = clean_products[:3]
+    # שלב 5: הכנת התוצאה הסופית (עיצוב כמו המתחרה)
+    top_4 = valid_products[:4]
     images = []
-    text = f"🛍️ **תוצאות עבור: {user_input}**\n\n"
+    
+    # כותרת מעוצבת
+    final_text = f"🧥 <b>נמצאו {len(top_4)} מוצרים מובילים עבורך!</b>\n\n"
+    
     kb = types.InlineKeyboardMarkup()
-
-    for i, p in enumerate(top_3):
-        try: title = GoogleTranslator(source='auto', target='iw').translate(p["product_title"])
-        except: title = p["product_title"]
-        
-        price = p.get("target_sale_price", "?") + "₪"
+    
+    for i, p in enumerate(top_4):
+        # כותרת נקייה
+        title_clean = clean_title_hebrew(p["product_title"])
+        price = p.get("target_sale_price", "?")
+        rating = p.get("evaluate_rate", "4.8") # אם אין, נשים ברירת מחדל גבוהה
+        orders = p.get("last_volume", "100+")
         link = get_short_link(p.get("product_detail_url"))
+        
         images.append(p.get("product_main_image_url"))
+        
+        # עיצוב מודעה כמו המתחרה
+        final_text += f"{i+1}. 🥇 {title_clean}\n"
+        final_text += f"*💰 מחיר:* {price}₪\n"
+        final_text += f"*⭐ דירוג:* {rating}\n"
+        final_text += f"*🛒 רכישות:* {orders}\n"
+        final_text += f"🔗 [לחץ לרכישה]({link})\n\n"
+        
+        kb.add(types.InlineKeyboardButton(f"🛍️ מוצר {i+1} - {price}₪", url=link))
 
-        text += f"{i+1}. {title[:55]}...\n💰 <b>{price}</b>\n🔗 {link}\n\n"
-        kb.add(types.InlineKeyboardButton(f"🛒 לרכישה {i+1}", url=link))
+    # מחיקת הודעת "מחפש..."
+    bot.delete_message(m.chat.id, msg.message_id)
 
+    # שליחת קולאז' + טקסט
     if images:
-        try: bot.send_photo(m.chat.id, create_collage(images), caption=text, parse_mode="HTML", reply_markup=kb)
-        except: bot.send_message(m.chat.id, text, parse_mode="HTML", reply_markup=kb)
+        try:
+            collage = create_collage(images)
+            bot.send_photo(m.chat.id, collage, caption=final_text, parse_mode="Markdown", reply_markup=kb)
+        except Exception as e:
+            bot.send_message(m.chat.id, final_text, parse_mode="Markdown", reply_markup=kb)
     else:
-        bot.send_message(m.chat.id, text, parse_mode="HTML", reply_markup=kb)
+        bot.send_message(m.chat.id, final_text, parse_mode="Markdown", reply_markup=kb)
 
-print("Bot is running with UNIVERSAL Logic...")
+print("Bot is running in 'Competitor Mode'...")
 bot.infinity_polling()
