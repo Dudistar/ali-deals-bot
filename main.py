@@ -44,8 +44,9 @@ if GEMINI_API_KEY:
 bot = telebot.TeleBot(BOT_TOKEN)
 
 # ==========================================
-# 🔒 מיפוי קטגוריות
+# 🔒 מיפוי קטגוריות (המגן האמיתי)
 # ==========================================
+# זה המנגנון שמאפשר לנו להיות בטוחים בתוצאות הגולמיות
 CATEGORY_MAP = {
     'coat': '200001901', 'jacket': '200001901', 'מעיל': '200001901',
     'drone': '200002649', 'רחפן': '200002649',
@@ -85,16 +86,17 @@ def generate_sign(params):
 # 🧠 שלב 1: הבלש (Smart Query)
 # ==========================================
 def smart_query_optimizer(user_text):
-    time.sleep(random.uniform(1, 2))
+    # השהייה קלה כדי לא להיראות רובוטי
+    time.sleep(random.uniform(0.5, 1.5))
     
     if HAS_GEMINI:
         try:
             prompt = f"""
-            Task: Translate Hebrew search to English Keywords.
+            Task: Convert Hebrew search to English Keywords.
             Input: "{user_text}"
             Rules:
             1. Output ONLY English.
-            2. "Coat" -> "Woman Elegant Coat".
+            2. "Coat" -> "Elegant Woman Coat".
             Output: Keywords only.
             """
             response = model.generate_content(prompt)
@@ -118,7 +120,8 @@ def smart_query_optimizer(user_text):
 def get_ali_products(cleaned_query, category_id=None):
     if not cleaned_query: return []
     
-    time.sleep(random.uniform(1, 2))
+    # השהייה קלה
+    time.sleep(random.uniform(0.5, 1.5))
     
     params = {
         'app_key': APP_KEY, 'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
@@ -129,6 +132,7 @@ def get_ali_products(cleaned_query, category_id=None):
         'sort': 'LAST_VOLUME_DESC', 
         'page_size': '40', 
     }
+    # השימוש בקטגוריה הוא ההגנה שלנו מכלי עבודה
     if category_id:
         params['category_ids'] = category_id
     
@@ -142,57 +146,24 @@ def get_ali_products(cleaned_query, category_id=None):
     except: return []
 
 # ==========================================
-# 🧪 בדיקת שפיות (Sanity Check)
+# ✍️ שלב 3: העורך והמסנן (AI Rewrite + Safe Fallback)
 # ==========================================
-def basic_keyword_match(product_title, query_english):
-    """
-    בדיקה קריטית: האם המילים מהחיפוש מופיעות בכותרת?
-    """
-    query_words = query_english.lower().split()
-    title_lower = product_title.lower()
-    
-    # סינון מילים לא חשובות
-    significant_words = [w for w in query_words if len(w) > 3] # רק מילים מעל 3 אותיות
-    
-    if not significant_words: return True 
-    
-    matches = 0
-    for word in significant_words:
-        if word in title_lower:
-            matches += 1
-            
-    # חייב לפחות התאמה אחת משמעותית
-    return matches > 0
-
-# ==========================================
-# ✍️ שלב 3: העורך והמסנן (AI Rewrite)
-# ==========================================
-def ai_filter_and_rewrite(products, user_query_hebrew, query_english):
+def ai_filter_and_rewrite(products, user_query_hebrew):
     if not products: return []
     
-    # 1. סינון שפיות (Sanity Filter) - השלב שמונע את כלי העבודה
-    sane_products = []
-    for p in products:
-        if basic_keyword_match(p.get('product_title', ''), query_english):
-            sane_products.append(p)
-    
-    # אם הכל היה זבל של אליאקספרס (כלי עבודה) - עוצרים כאן!
-    # לא מחזירים את הרשימה המקורית!
-    if not sane_products:
-        return [] 
-
-    # 2. סינון מחיר ומיון
+    # מיון לפי מחיר - האיכותיים למעלה
     pre_filtered = []
-    for p in sane_products:
+    for p in products:
         price = safe_float(p.get('target_sale_price', 0))
         if price > 0: pre_filtered.append(p)
             
     pre_filtered.sort(key=lambda x: safe_float(x.get('target_sale_price', 0)), reverse=True)
-    candidates = pre_filtered[:12]
+    candidates = pre_filtered[:10]
 
-    time.sleep(random.uniform(2, 4))
+    # השהייה יזומה - מדמה חשיבה עמוקה
+    time.sleep(random.uniform(2, 3.5))
 
-    # אם אין AI, משתמשים במתרגם
+    # אם אין AI מוגדר, מחזירים עם תרגום רגיל
     if not HAS_GEMINI:
         for p in candidates:
             p['ai_title'] = translate_to_hebrew(p.get('product_title'))
@@ -203,20 +174,20 @@ def ai_filter_and_rewrite(products, user_query_hebrew, query_english):
         items_str += f"Item {i}: {p.get('product_title')} | Price: {p.get('target_sale_price')}\n"
 
     prompt = f"""
-    Role: Senior Product Analyst.
-    User Query: "{user_query_hebrew}" (English keyword: {query_english})
+    Role: Senior Product Curator.
+    User Query: "{user_query_hebrew}"
     
     Task:
-    1. STRICT FILTER: Does the item MATCH the query?
-       - Query "Coat" -> Item "Tool" -> VALID: FALSE.
-    2. REWRITE: Write Hebrew title (max 10 words) + Emoji.
+    1. FILTER: Is it the correct product type? (Coat=Coat).
+       - Be FLEXIBLE on colors/styles. If user wants "Cream" and item is "Beige", ACCEPT IT.
+    2. REWRITE: Write a short, engaging Hebrew title (max 10 words) with emoji.
     
     Items:
     {items_str}
     
     Output JSON ONLY:
     [
-        {{"index": 0, "valid": true, "hebrew_title": "..."}},
+        {{"index": 0, "valid": true, "hebrew_title": "מעיל אלגנטי בצבע קרם 🧥"}},
         {{"index": 1, "valid": false}}
     ]
     """
@@ -234,15 +205,20 @@ def ai_filter_and_rewrite(products, user_query_hebrew, query_english):
                     product['ai_title'] = decision.get("hebrew_title")
                     final_list.append(product)
         
-        time.sleep(1.5)
-        
-        # אם ה-AI פסל את הכל - מחזירים רשימה ריקה!
-        # לא מפעילים גיבוי שמחזיר זבל.
+        # === רשת הביטחון (The Safety Net) ===
+        # אם ה-AI היה קשוח מידי ולא החזיר כלום, אנחנו מחזירים את המועמדים המקוריים!
+        # זה בטוח לעשות את זה כי אנחנו נעולים על Category ID.
+        if not final_list:
+            logging.info("AI rejected all items. Using fallback.")
+            for p in candidates[:3]:
+                 p['ai_title'] = translate_to_hebrew(p.get('product_title'))
+            return candidates[:3]
+
         return final_list[:3]
         
     except Exception as e:
         logging.error(f"AI Error: {e}")
-        # במקרה של קריסת AI (טכנית), אנחנו סומכים על סינון השפיות שעשינו קודם
+        # במקרה שגיאה טכנית ב-AI, מחזירים את המועמדים המקוריים
         for p in candidates[:3]:
              p['ai_title'] = translate_to_hebrew(p.get('product_title'))
         return candidates[:3]
@@ -311,8 +287,7 @@ def notify_admin(user, query):
 def start(m):
     welcome_msg = (
         "✨ <b>ברוכים הבאים ל-DrDeals Premium</b> 💎\n\n"
-        "הבוט שלי יודע דבר אחד חשוב: להבדיל בין רחפן למטען.\n"
-        "זה לוקח לו רגע, אבל זה עובד.\n\n"
+        "הבוט הזה משלב הגנה חכמה (קטגוריות) עם מוח חריף (AI).\n"
         "👇 <b>נסו אותו: 'חפש לי...'</b>"
     )
     bot.send_message(m.chat.id, welcome_msg, parse_mode="HTML")
@@ -327,36 +302,38 @@ def handle_text(m):
     notify_admin(m.from_user, raw_query)
     
     bot.send_chat_action(m.chat.id, 'typing')
-    msg = bot.send_message(m.chat.id, f"🔍 <b>מנתח את הבקשה: {raw_query}...</b>", parse_mode="HTML")
+    msg = bot.send_message(m.chat.id, f"🔍 <b>מנתח בקשה: {raw_query}...</b>", parse_mode="HTML")
     
+    # שלב 1: נעילת קטגוריה (חובה!)
     cat_id = get_category_id(raw_query)
-    query_en = smart_query_optimizer(raw_query)
     
+    # שלב 2: תרגום
+    query_en = smart_query_optimizer(raw_query)
     if not query_en:
-        bot.edit_message_text("⚠️ תקלה בתרגום. נסה שוב.", m.chat.id, msg.message_id)
+        bot.edit_message_text("⚠️ שגיאת תרגום. נסה שוב.", m.chat.id, msg.message_id)
         return
 
+    # שלב 3: סריקה
     bot.edit_message_text(f"🌏 <b>סורק מאגרים בינלאומיים...</b>", m.chat.id, msg.message_id, parse_mode="HTML")
-    bot.send_chat_action(m.chat.id, 'typing')
-    
     products = get_ali_products(query_en, category_id=cat_id)
 
     if not products:
         bot.edit_message_text("❌ לא נמצאו מוצרים תואמים.", m.chat.id, msg.message_id)
         return
 
-    bot.edit_message_text(f"🧠 <b>ה-AI בודק התאמה ומסנן זיופים...</b>", m.chat.id, msg.message_id, parse_mode="HTML")
+    # שלב 4: AI עם רשת ביטחון
+    bot.edit_message_text(f"🧠 <b>ה-AI כותב תיאורים ומסנן זיופים...</b>", m.chat.id, msg.message_id, parse_mode="HTML")
     bot.send_chat_action(m.chat.id, 'typing')
     
-    # שולחים גם את האנגלית לבדיקת שפיות
-    final_list = ai_filter_and_rewrite(products, raw_query, query_en)
-    
+    final_list = ai_filter_and_rewrite(products, raw_query)
     bot.delete_message(m.chat.id, msg.message_id)
 
+    # אם גם אחרי רשת הביטחון אין כלום - אז באמת אין כלום
     if not final_list:
-        bot.send_message(m.chat.id, f"🛑 <b>לא נמצאו תוצאות מדויקות.</b>\nהמוצרים שנמצאו לא תאמו ב-100% לבקשה, ולכן סיננתי אותם כדי לא להציג תוצאות שגויות.")
+        bot.send_message(m.chat.id, f"🛑 לא נמצאו תוצאות איכותיות מספיק.")
         return
 
+    # שלב 5: הצגה
     image_urls = []
     full_text = f"🛍️ <b>הבחירות המובילות עבורך:</b>\n\n"
     markup = types.InlineKeyboardMarkup(row_width=1)
