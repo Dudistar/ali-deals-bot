@@ -24,7 +24,6 @@ TRACKING_ID = "DrDeals"
 ADMIN_ID = 173837076
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-# הגדרת סשן יציב למניעת ניתוקים
 session = requests.Session()
 retry = Retry(connect=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
 adapter = HTTPAdapter(max_retries=retry)
@@ -62,41 +61,52 @@ def translate_to_hebrew(text):
         return GoogleTranslator(source='auto', target='iw').translate(text)
     except: return text
 
+def contains_hebrew(text):
+    return any("\u0590" <= char <= "\u05EA" for char in text)
+
 # ==========================================
 # 🧠 שלב 1: הבלש (Smart Query)
 # ==========================================
 def smart_query_optimizer(user_text):
-    """
-    מתרגם את כוונת המשתמש לאנגלית טכנית.
-    זה קריטי כדי שפונקציית הניקוד (Relevance Score) תעבוד מול אליאקספרס.
-    """
+    """חייב להחזיר אנגלית. אם נכשל, מחזיר None כדי לא לשלוח זבל."""
+    
+    # ניסיון 1: AI
     if HAS_GEMINI:
         try:
             prompt = f"""
-            Task: Extract English keywords for AliExpress search.
+            Task: Translate to AliExpress English Search Terms.
             Input: "{user_text}"
             Rules:
-            1. Output ONLY product name keywords.
-            2. IF "Galaxy S23", add "Samsung". IF "14 Pro", add "iPhone".
-            3. No polite words.
-            Output: English Keywords Only.
+            1. Output ONLY English.
+            2. Remove polite words.
+            3. "Cream color" -> "Beige" or "Cream".
+            Output: Keywords only.
             """
             response = model.generate_content(prompt)
             if response.text:
-                return response.text.strip().replace('"', '')
+                res = response.text.strip().replace('"', '')
+                if not contains_hebrew(res): return res
         except: pass
 
+    # ניסיון 2: תרגום רגיל
     try:
         from deep_translator import GoogleTranslator
-        return GoogleTranslator(source='auto', target='en').translate(user_text)
-    except:
-        return user_text
+        translated = GoogleTranslator(source='auto', target='en').translate(user_text)
+        if not contains_hebrew(translated): return translated
+    except: pass
+
+    # אם נשארנו עם עברית - זה כישלון. עדיף להחזיר כלום מאשר לשלוח עברית לאליאקספרס
+    if contains_hebrew(user_text):
+        return None
+        
+    return user_text
 
 # ==========================================
 # 🎣 שלב 2: הרשת (API Fetcher)
 # ==========================================
 def get_ali_products(cleaned_query):
-    # מושכים 50 מוצרים כדי שיהיה מבחר לסינון הניקוד
+    if not cleaned_query: return []
+
     params = {
         'app_key': APP_KEY, 'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
         'sign_method': 'md5', 'method': 'aliexpress.affiliate.product.query',
@@ -110,111 +120,87 @@ def get_ali_products(cleaned_query):
     
     try:
         response = session.post("https://api-sg.aliexpress.com/sync", data=params, timeout=10)
-        response.raise_for_status()
         data = response.json().get('aliexpress_affiliate_product_query_response', {}).get('resp_result', {}).get('result', {}).get('products', {}).get('product', [])
         if isinstance(data, dict): data = [data]
         return data
     except: return []
 
 # ==========================================
-# 📊 תוספת חדשה: חישוב ציון רלוונטיות
+# 📊 בדיקת רלוונטיות (Relevance Score)
 # ==========================================
 def calculate_relevance_score(title, query_words):
-    """
-    נותן ציון לכל מוצר:
-    +2 נקודות על כל מילה מהחיפוש שמופיעה בכותרת.
-    +1 נקודה אם הכותרת קצרה ואיכותית (פחות מ-12 מילים).
-    """
     score = 0
     title_lower = title.lower()
     
+    # בדיקה האם מילות המפתח מופיעות בכותרת
+    matches = 0
     for w in query_words:
-        if w in title_lower:
+        if len(w) > 2 and w in title_lower: # מתעלמים ממילות קישור קצרות
             score += 2
+            matches += 1
             
-    # בונוס לכותרות נקיות (בדרך כלל מותגים אמיתיים ולא זיופים עם כותרת באורך הגלות)
-    if len(title_lower.split()) < 12:
+    # אם אין שום התאמה למילים, הציון הוא אפס עגול
+    if matches == 0:
+        return 0
+        
+    if len(title_lower.split()) < 15: # בונוס לכותרות נקיות
         score += 1
         
     return score
 
 # ==========================================
-# 💎 שלב 3: הסלקטור המשולב (Score + Median + AI)
+# 💎 שלב 3: הסלקטור הקשוח (No Fallback)
 # ==========================================
 def filter_candidates(products, query_en):
     if not products: return []
     
-    # פירוק השאילתה למילים לטובת הניקוד
     query_words = query_en.lower().split()
-    
     scored_products = []
     prices = []
     
-    # 1. מעבר ראשון: מתן ציונים ואיסוף מחירים
     for p in products:
         title = p.get('product_title', '')
         price = safe_float(p.get('target_sale_price', 0))
-        
         if price <= 0: continue
         
-        # חישוב הציון
+        # חישוב ציון
         score = calculate_relevance_score(title, query_words)
         
-        # אנחנו שומרים את המוצר יחד עם הציון שלו
-        # מבנה: (ציון, מחיר, מוצר)
-        scored_products.append({'p': p, 'score': score, 'price': price})
-        prices.append(price)
+        # --- השינוי הקריטי: סינון אגרסיבי ---
+        # אם הציון הוא 0 (אף מילה לא תואמת), המוצר נזרק לפח.
+        # לא שומרים אותו "למקרה חירום". זבל הוא זבל.
+        if score > 0:
+            scored_products.append({'p': p, 'score': score, 'price': price})
+            prices.append(price)
 
-    if not scored_products: return []
+    # אם אחרי הסינון לא נשאר כלום - עדיף להחזיר רשימה ריקה
+    # מאשר להחזיר את המוצרים המקוריים (שהם כנראה כלי עבודה)
+    if not scored_products:
+        return []
 
-    # 2. סינון לפי ניקוד מינימלי
-    # אם המוצר לא מכיל אף מילה מהחיפוש (ציון 0), הוא עף.
-    # אנחנו רוצים לפחות התאמה אחת.
-    high_score_products = [item for item in scored_products if item['score'] >= 2]
-    
-    # אם הסינון היה אגרסיבי מידי ונשארנו בלי כלום, נתפשר על ציון נמוך יותר
-    if not high_score_products:
-        high_score_products = scored_products
+    # סינון מחיר (רק אם יש מספיק מוצרים רלוונטיים)
+    final_candidates = [item['p'] for item in scored_products]
+    if len(prices) > 5:
+        median_price = statistics.median(prices)
+        threshold = median_price * 0.3
+        final_candidates = [item['p'] for item in scored_products if item['price'] >= threshold]
 
-    # 3. סינון לפי מחיר חציוני (להעיף זבל זול)
-    # מחשבים חציון רק על המוצרים הרלוונטיים
-    relevant_prices = [item['price'] for item in high_score_products]
-    if len(relevant_prices) > 3:
-        median_price = statistics.median(relevant_prices)
-        threshold = median_price * 0.3 # רף תחתון
-        
-        # משאירים רק מוצרים שעוברים את רף המחיר
-        final_candidates = [item['p'] for item in high_score_products if item['price'] >= threshold]
-    else:
-        final_candidates = [item['p'] for item in high_score_products]
-    
-    # אם נשארנו בלי כלום אחרי סינון מחיר, נחזיר את הרלוונטיים לפני סינון המחיר
-    if not final_candidates:
-        final_candidates = [item['p'] for item in high_score_products]
-
-    # מיון לפי מחיר (מהיקר לזול) - ההנחה היא שהמוצר האמיתי יקר יותר
+    # מיון לפי מחיר
     final_candidates.sort(key=lambda x: safe_float(x.get('target_sale_price', 0)), reverse=True)
-    
-    # לוקחים את ה-20 הטובים ביותר ל-AI
     top_20 = final_candidates[:20]
 
     if not HAS_GEMINI: return top_20[:4]
 
-    # 4. הבורר הסופי: AI
-    list_text = "\n".join([f"ID {i}: {p['product_title']} (Price: {p.get('target_sale_price', '0')})" for i, p in enumerate(top_20)])
-    
+    # סינון AI סופי
+    list_text = "\n".join([f"ID {i}: {p['product_title']}" for i, p in enumerate(top_20)])
     prompt = f"""
     User Query: "{query_en}"
-    Task: Select the BEST MAIN PRODUCTS.
-    
-    RULES:
-    1. RELEVANCE: Ensure the item matches the query exactly.
-    2. NO PARTS: Reject "Case", "Strap", "Battery" if user wants the Device.
-    3. PRICE: Reject suspicious low prices.
-    
+    Task: Select BEST matches.
+    Rules:
+    1. REJECT items that don't match the query content (e.g. Tools for a Coat query).
+    2. REJECT Accessories/Parts.
     List:
     {list_text}
-    
     Output JSON IDs: [0, 2]
     """
     try:
@@ -287,7 +273,7 @@ def notify_admin(user, query):
 @bot.message_handler(commands=['start'])
 def start(m):
     welcome_msg = (
-        "✨ <b>ברוכים הבאים ל-DrDeals Premium</b> | הדור הבא של הקניות 💎\n\n"
+        "✨ <b>ברוכים הבאים ל-DrDeals Premium</b> 💎\n\n"
         "נעים להכיר, אני עוזר הקניות האישי שלכם.\n"
         "אני משתמש באלגוריתם דירוג חכם 📊 כדי למצוא לכם את המוצר המדויק.\n\n"
         "👇 <b>מה תרצו לחפש היום? (כתבו 'חפש לי...')</b>"
@@ -306,8 +292,7 @@ def start(m):
 
 @bot.message_handler(commands=['help'])
 def help_command(m):
-    help_text = "💎 <b>טיפ:</b> כתבו **'חפש לי'** ואת שם המוצר המדויק."
-    bot.send_message(m.chat.id, help_text, parse_mode="HTML")
+    bot.send_message(m.chat.id, "💎 <b>טיפ:</b> כתבו **'חפש לי'** ואת שם המוצר המדויק.", parse_mode="HTML")
 
 @bot.message_handler(func=lambda m: "עזרה" in m.text)
 def handle_help_text(m):
@@ -324,24 +309,30 @@ def handle_text(m):
     
     msg = bot.send_message(m.chat.id, f"🔍 <b>מנתח בקשה: {raw_query}...</b>", parse_mode="HTML")
     
+    # שלב 1: תרגום חובה (אם נכשל - עוצרים)
     query_en = smart_query_optimizer(raw_query)
     
-    # עדכון סטטוס למשתמש
-    bot.edit_message_text(f"📊 <b>סורק ומדרג תוצאות עבור: {query_en}...</b>", m.chat.id, msg.message_id, parse_mode="HTML")
-
-    products = get_ali_products(query_en)
-    if not products: products = get_ali_products(raw_query)
-
-    if not products:
-        bot.edit_message_text("❌ לא נמצאו מוצרים. נסה חיפוש אחר.", m.chat.id, msg.message_id)
+    if not query_en:
+        bot.edit_message_text("⚠️ שגיאת תרגום. אנא נסה לכתוב את המוצר באנגלית.", m.chat.id, msg.message_id)
         return
 
+    # שלב 2: חיפוש
+    bot.edit_message_text(f"📊 <b>סורק עבור: {query_en}...</b>", m.chat.id, msg.message_id, parse_mode="HTML")
+    products = get_ali_products(query_en)
+
+    if not products:
+        bot.edit_message_text("❌ לא נמצאו מוצרים.", m.chat.id, msg.message_id)
+        return
+
+    # שלב 3: סינון קשוח
+    bot.edit_message_text(f"💎 <b>בוחר את הטובים ביותר...</b>", m.chat.id, msg.message_id, parse_mode="HTML")
     final_list = filter_candidates(products, query_en)
     
     bot.delete_message(m.chat.id, msg.message_id)
 
     if not final_list:
-        bot.send_message(m.chat.id, "🤔 לא נמצאו מוצרים בדירוג רלוונטיות גבוה.")
+        # כאן השינוי הגדול: אם הכל סונן (כי הכל היה כלי עבודה), אומרים למשתמש שלא נמצאה התאמה
+        bot.send_message(m.chat.id, f"🤔 לא מצאתי מוצרים שתואמים בדיוק ל-'{raw_query}'.\nנסה להיות ספציפי יותר (למשל: 'מעיל צמר נשים').")
         return
 
     image_urls = []
