@@ -1,7 +1,3 @@
-# ===============================
-# DrDeals Premium – Stable Build
-# ===============================
-
 import telebot
 import requests
 import time
@@ -9,32 +5,36 @@ import os
 import io
 import hashlib
 import logging
-import json
-import random
 from telebot import types
 from PIL import Image, ImageDraw
-from requests.adapters import HTTPAdapter
-from requests.packages.urllib3.util.retry import Retry
 from deep_translator import GoogleTranslator
 
 # ==========================================
-# ⚙️ הגדרות מערכת – פרטים אישיים (לא נוגעים!)
+# ⚙️ הגדרות
 # ==========================================
 BOT_TOKEN = "8575064945:AAH_2WmHMH25TMFvt4FM6OWwfqFcDAaqCPw"
 APP_KEY = "523460"
 APP_SECRET = "Co7bNfYfqlu8KTdj2asXQV78oziICQEs"
 TRACKING_ID = "DrDeals"
-ADMIN_ID = 173837076
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 logging.basicConfig(level=logging.INFO)
-
 bot = telebot.TeleBot(BOT_TOKEN)
-
 session = requests.Session()
-retry = Retry(connect=3, backoff_factor=1, status_forcelist=[500,502,503,504])
-adapter = HTTPAdapter(max_retries=retry)
-session.mount('https://', adapter)
+
+# ==========================================
+# 🧠 מיפוי קטגוריות קשיח
+# ==========================================
+CATEGORY_FORCE = {
+    "מעיל": {
+        "category_id": "200001901",  # Women's Coats
+        "must_words": ["coat", "jacket", "trench", "winter"],
+        "blacklist": [
+            "aluminum", "metal", "jaw", "clamp", "tool",
+            "protector", "guard", "industrial", "machinery",
+            "mount", "bracket", "cover", "frame"
+        ]
+    }
+}
 
 # ==========================================
 # 🔐 חתימה
@@ -44,157 +44,155 @@ def generate_sign(params):
     return hashlib.md5(s.encode()).hexdigest().upper()
 
 # ==========================================
-# 🧠 תרגום חכם
+# 🌍 תרגום
 # ==========================================
-def smart_translate(text):
-    try:
-        return GoogleTranslator(source='auto', target='en').translate(text)
-    except:
-        return text
+def to_en(text):
+    return GoogleTranslator(source='auto', target='en').translate(text)
+
+def to_he(text):
+    return GoogleTranslator(source='auto', target='iw').translate(text)
 
 # ==========================================
-# 🎣 AliExpress Fetch
+# 🎯 חיפוש AliExpress
 # ==========================================
-def get_ali_products(query):
+def search_ali(query_en, category_id):
     params = {
         "app_key": APP_KEY,
-        "method": "aliexpress.affiliate.product.query",
         "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'),
-        "format": "json",
         "sign_method": "md5",
-        "v": "2.0",
+        "method": "aliexpress.affiliate.product.query",
         "partner_id": "top-autopilot",
-        "keywords": query,
+        "format": "json",
+        "v": "2.0",
+        "keywords": query_en,
+        "category_ids": category_id,
         "target_currency": "ILS",
         "ship_to_country": "IL",
-        "sort": "LAST_VOLUME_DESC",
-        "page_size": "50"
+        "page_size": "50",
+        "sort": "LAST_VOLUME_DESC"
     }
     params["sign"] = generate_sign(params)
 
-    try:
-        r = session.post("https://api-sg.aliexpress.com/sync", data=params, timeout=10)
-        data = r.json()
-        products = data["aliexpress_affiliate_product_query_response"]["resp_result"]["result"]["products"]["product"]
-        return products if isinstance(products, list) else [products]
-    except Exception as e:
-        logging.error(e)
-        return []
+    r = session.post("https://api-sg.aliexpress.com/sync", data=params, timeout=10)
+    data = r.json()
+    products = data.get(
+        "aliexpress_affiliate_product_query_response", {}
+    ).get("resp_result", {}).get("result", {}).get("products", {}).get("product", [])
+
+    if isinstance(products, dict):
+        products = [products]
+
+    return products
 
 # ==========================================
-# 🧹 סינון רך (לא הורג תוצאות טובות)
+# 🛑 פילטר קטלני (העיקר!)
 # ==========================================
-BAD_WORDS = [
-    "case","cover","holder","mount","adapter",
-    "cable","film","strap","sticker","spare"
-]
-
-def soft_filter(products, query_en):
-    core = query_en.split()[0].lower()  # רק מילת ליבה
-    clean = []
+def strict_filter(products, rules):
+    final = []
 
     for p in products:
-        title = p.get("product_title","").lower()
-        if any(b in title for b in BAD_WORDS):
-            continue
-        if core not in title and len(core) > 3:
-            continue
-        clean.append(p)
+        title = p.get("product_title", "").lower()
 
-    return clean
+        # ❌ blacklist
+        if any(bad in title for bad in rules["blacklist"]):
+            continue
+
+        # ✅ חייב להכיל מילה רלוונטית
+        if not any(good in title for good in rules["must_words"]):
+            continue
+
+        final.append(p)
+
+    return final[:3]
 
 # ==========================================
-# 🔗 קיצור לינק – בטוח
+# 🔗 קיצור קישור
 # ==========================================
-def get_short_link(url):
-    if not url:
-        return None
+def short_link(url):
     clean = url.split("?")[0]
-
     params = {
         "app_key": APP_KEY,
-        "method": "aliexpress.affiliate.link.generate",
         "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'),
-        "format": "json",
         "sign_method": "md5",
-        "v": "2.0",
+        "method": "aliexpress.affiliate.link.generate",
         "partner_id": "top-autopilot",
+        "format": "json",
+        "v": "2.0",
         "promotion_link_type": "0",
         "source_values": clean,
         "tracking_id": TRACKING_ID
     }
     params["sign"] = generate_sign(params)
 
-    try:
-        r = session.post("https://api-sg.aliexpress.com/sync", data=params, timeout=5).json()
-        link = r["aliexpress_affiliate_link_generate_response"]["resp_result"]["result"]["promotion_links"]["promotion_link"][0]
-        return link.get("promotion_short_link") or link.get("promotion_link")
-    except:
-        return clean
+    r = session.post("https://api-sg.aliexpress.com/sync", data=params, timeout=5).json()
+    res = r.get("aliexpress_affiliate_link_generate_response", {}) \
+           .get("resp_result", {}).get("result", {}) \
+           .get("promotion_links", {}).get("promotion_link", [])
+
+    if res:
+        return res[0].get("promotion_short_link")
+
+    return clean
 
 # ==========================================
 # 🖼️ קולאז'
 # ==========================================
-def create_collage(urls):
-    imgs = []
-    for u in urls[:3]:
+def collage(imgs):
+    images = []
+    for url in imgs:
         try:
-            img = Image.open(io.BytesIO(session.get(u, timeout=5).content)).resize((500,500))
+            img = Image.open(io.BytesIO(session.get(url).content)).resize((500, 500))
+            images.append(img)
         except:
-            img = Image.new("RGB",(500,500),"white")
-        imgs.append(img)
+            images.append(Image.new("RGB", (500, 500), "white"))
 
-    while len(imgs)<3:
-        imgs.append(Image.new("RGB",(500,500),"white"))
+    base = Image.new("RGB", (1000, 1000), "white")
+    pos = [(0,0),(500,0),(0,500)]
+    draw = ImageDraw.Draw(base)
 
-    canvas = Image.new("RGB",(1000,1000),"white")
-    canvas.paste(imgs[0].resize((1000,500)),(0,0))
-    canvas.paste(imgs[1],(0,500))
-    canvas.paste(imgs[2],(500,500))
-
-    draw = ImageDraw.Draw(canvas)
-    for i,(x,y) in enumerate([(30,30),(30,530),(530,530)]):
-        draw.ellipse((x,y,x+70,y+70),fill="#FFD700",outline="black",width=3)
-        draw.text((x+25,y+15),str(i+1),fill="black")
+    for i, img in enumerate(images):
+        base.paste(img, pos[i])
+        draw.ellipse((pos[i][0]+20, pos[i][1]+20, pos[i][0]+80, pos[i][1]+80), fill="#FFD700")
+        draw.text((pos[i][0]+40, pos[i][1]+30), str(i+1), fill="black")
 
     out = io.BytesIO()
-    canvas.save(out,"JPEG",quality=85)
+    base.save(out, format="JPEG")
     out.seek(0)
     return out
 
 # ==========================================
-# 🚀 בוט
+# 🤖 בוט
 # ==========================================
 @bot.message_handler(func=lambda m: True)
-def handler(m):
+def handle(m):
     if not m.text.startswith("חפש לי"):
+        bot.reply_to(m, "כתוב: חפש לי מעיל אלגנטי...")
         return
 
-    query = m.text.replace("חפש לי","").strip()
-    bot.send_chat_action(m.chat.id,"typing")
+    query_he = m.text.replace("חפש לי", "").strip()
+    rule = CATEGORY_FORCE.get("מעיל")
 
-    q_en = smart_translate(query)
-    products = get_ali_products(q_en)
-    products = soft_filter(products, q_en)
+    query_en = to_en(query_he)
+    products = search_ali(query_en, rule["category_id"])
+    final = strict_filter(products, rule)
 
-    if not products:
-        bot.send_message(m.chat.id,"❌ לא נמצאו תוצאות מדויקות.")
+    if not final:
+        bot.send_message(m.chat.id, "❌ לא נמצא מעיל אמיתי. סיננתי הכל בכוונה.")
         return
 
-    final = products[:3]
-    images, text = [], "🏆 <b>הבחירות הטובות ביותר:</b>\n\n"
+    imgs = [p["product_main_image_url"] for p in final]
+    bot.send_photo(m.chat.id, collage(imgs), caption=f"🏆 הבחירות עבור: {query_he}")
+
+    text = ""
     kb = types.InlineKeyboardMarkup()
 
-    for i,p in enumerate(final):
-        title = GoogleTranslator(source='auto',target='iw').translate(p["product_title"])
-        price = p.get("target_sale_price","?")
-        link = get_short_link(p.get("product_detail_url"))
-        images.append(p.get("product_main_image_url"))
+    for i, p in enumerate(final):
+        title = to_he(p["product_title"])[:60]
+        price = p.get("target_sale_price", "?")
+        link = short_link(p["product_detail_url"])
+        text += f"{i+1}. {title}\n💰 {price}₪\n🔗 {link}\n\n"
+        kb.add(types.InlineKeyboardButton(f"🛒 מוצר {i+1}", url=link))
 
-        text += f"{i+1}. {title[:60]}\n💰 {price}₪\n🔗 {link}\n\n"
-        kb.add(types.InlineKeyboardButton(f"🛒 מוצר {i+1}",url=link))
-
-    bot.send_photo(m.chat.id, create_collage(images), caption=f"🔍 תוצאות עבור: {query}", parse_mode="HTML")
-    bot.send_message(m.chat.id, text + "\n💎 DrDeals", reply_markup=kb, disable_web_page_preview=True)
+    bot.send_message(m.chat.id, text, reply_markup=kb, disable_web_page_preview=True)
 
 bot.infinity_polling()
