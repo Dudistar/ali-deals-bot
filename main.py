@@ -7,6 +7,7 @@ import io
 import hashlib
 import statistics
 import logging
+import json
 from telebot import types
 from PIL import Image, ImageDraw
 from requests.adapters import HTTPAdapter
@@ -61,52 +62,46 @@ def translate_to_hebrew(text):
         return GoogleTranslator(source='auto', target='iw').translate(text)
     except: return text
 
-def contains_hebrew(text):
-    return any("\u0590" <= char <= "\u05EA" for char in text)
-
 # ==========================================
 # 🧠 שלב 1: הבלש (Smart Query)
 # ==========================================
 def smart_query_optimizer(user_text):
-    """חייב להחזיר אנגלית. אם נכשל, מחזיר None כדי לא לשלוח זבל."""
-    
-    # ניסיון 1: AI
+    """מתרגם לאנגלית. אם נכשל ומחזיר עברית - מחזיר None."""
     if HAS_GEMINI:
         try:
             prompt = f"""
-            Task: Translate to AliExpress English Search Terms.
+            Task: Convert Hebrew user request to AliExpress English Search Keywords.
             Input: "{user_text}"
             Rules:
             1. Output ONLY English.
-            2. Remove polite words.
-            3. "Cream color" -> "Beige" or "Cream".
+            2. Be specific (e.g. "Coat" -> "Elegant Woman Wool Coat").
+            3. Remove polite words.
             Output: Keywords only.
             """
             response = model.generate_content(prompt)
             if response.text:
                 res = response.text.strip().replace('"', '')
-                if not contains_hebrew(res): return res
+                # בדיקה שהתוצאה לא מכילה עברית
+                if not any("\u0590" <= char <= "\u05EA" for char in res):
+                    return res
         except: pass
 
-    # ניסיון 2: תרגום רגיל
     try:
         from deep_translator import GoogleTranslator
         translated = GoogleTranslator(source='auto', target='en').translate(user_text)
-        if not contains_hebrew(translated): return translated
+        if translated and not any("\u0590" <= char <= "\u05EA" for char in translated):
+            return translated
     except: pass
 
-    # אם נשארנו עם עברית - זה כישלון. עדיף להחזיר כלום מאשר לשלוח עברית לאליאקספרס
-    if contains_hebrew(user_text):
-        return None
-        
-    return user_text
+    return None
 
 # ==========================================
 # 🎣 שלב 2: הרשת (API Fetcher)
 # ==========================================
 def get_ali_products(cleaned_query):
     if not cleaned_query: return []
-
+    
+    # חזרנו ל-30 מוצרים - אנחנו מעדיפים איכות על כמות
     params = {
         'app_key': APP_KEY, 'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
         'sign_method': 'md5', 'method': 'aliexpress.affiliate.product.query',
@@ -114,7 +109,7 @@ def get_ali_products(cleaned_query):
         'keywords': cleaned_query, 
         'target_currency': 'ILS', 'ship_to_country': 'IL',
         'sort': 'LAST_VOLUME_DESC', 
-        'page_size': '50', 
+        'page_size': '30', 
     }
     params['sign'] = generate_sign(params)
     
@@ -126,93 +121,88 @@ def get_ali_products(cleaned_query):
     except: return []
 
 # ==========================================
-# 📊 בדיקת רלוונטיות (Relevance Score)
+# ✍️ שלב 3: העורך והמסנן (The Slow & Smart Logic)
 # ==========================================
-def calculate_relevance_score(title, query_words):
-    score = 0
-    title_lower = title.lower()
-    
-    # בדיקה האם מילות המפתח מופיעות בכותרת
-    matches = 0
-    for w in query_words:
-        if len(w) > 2 and w in title_lower: # מתעלמים ממילות קישור קצרות
-            score += 2
-            matches += 1
-            
-    # אם אין שום התאמה למילים, הציון הוא אפס עגול
-    if matches == 0:
-        return 0
-        
-    if len(title_lower.split()) < 15: # בונוס לכותרות נקיות
-        score += 1
-        
-    return score
-
-# ==========================================
-# 💎 שלב 3: הסלקטור הקשוח (No Fallback)
-# ==========================================
-def filter_candidates(products, query_en):
+def ai_filter_and_rewrite(products, user_query_hebrew):
+    """
+    זו הפונקציה שיוצרת את ה"השהייה" אבל מביאה תוצאות זהב.
+    היא שולחת את המוצרים ל-AI, מבקשת ממנו לסנן זבל, ולכתוב תיאור שיווקי.
+    """
     if not products: return []
     
-    query_words = query_en.lower().split()
-    scored_products = []
-    prices = []
-    
+    # הכנה ראשונית: סינון מחיר ורלוונטיות בסיסית
+    pre_filtered = []
     for p in products:
-        title = p.get('product_title', '')
         price = safe_float(p.get('target_sale_price', 0))
-        if price <= 0: continue
-        
-        # חישוב ציון
-        score = calculate_relevance_score(title, query_words)
-        
-        # --- השינוי הקריטי: סינון אגרסיבי ---
-        # אם הציון הוא 0 (אף מילה לא תואמת), המוצר נזרק לפח.
-        # לא שומרים אותו "למקרה חירום". זבל הוא זבל.
-        if score > 0:
-            scored_products.append({'p': p, 'score': score, 'price': price})
-            prices.append(price)
+        if price > 0:
+            pre_filtered.append(p)
+            
+    # מיון לפי מחיר ולקיחת ה-8 היקרים ביותר (הנחה: האיכותיים יקרים יותר)
+    pre_filtered.sort(key=lambda x: safe_float(x.get('target_sale_price', 0)), reverse=True)
+    candidates = pre_filtered[:8]
 
-    # אם אחרי הסינון לא נשאר כלום - עדיף להחזיר רשימה ריקה
-    # מאשר להחזיר את המוצרים המקוריים (שהם כנראה כלי עבודה)
-    if not scored_products:
-        return []
+    if not HAS_GEMINI:
+        # גיבוי למקרה שאין AI - עובד רגיל
+        return candidates[:3]
 
-    # סינון מחיר (רק אם יש מספיק מוצרים רלוונטיים)
-    final_candidates = [item['p'] for item in scored_products]
-    if len(prices) > 5:
-        median_price = statistics.median(prices)
-        threshold = median_price * 0.3
-        final_candidates = [item['p'] for item in scored_products if item['price'] >= threshold]
+    # --- הקסם מתחיל כאן: שליחה ל-AI לעיבוד ---
+    # אנו בונים רשימה ל-AI ומבקשים ממנו פלט בפורמט JSON בלבד
+    items_str = ""
+    for i, p in enumerate(candidates):
+        items_str += f"Item {i}: {p.get('product_title')} | Price: {p.get('target_sale_price')}\n"
 
-    # מיון לפי מחיר
-    final_candidates.sort(key=lambda x: safe_float(x.get('target_sale_price', 0)), reverse=True)
-    top_20 = final_candidates[:20]
-
-    if not HAS_GEMINI: return top_20[:4]
-
-    # סינון AI סופי
-    list_text = "\n".join([f"ID {i}: {p['product_title']}" for i, p in enumerate(top_20)])
     prompt = f"""
-    User Query: "{query_en}"
-    Task: Select BEST matches.
-    Rules:
-    1. REJECT items that don't match the query content (e.g. Tools for a Coat query).
-    2. REJECT Accessories/Parts.
-    List:
-    {list_text}
-    Output JSON IDs: [0, 2]
+    You are a professional Hebrew Copywriter and Quality Filter.
+    User Request (Hebrew): "{user_query_hebrew}"
+    
+    Here is a list of items from AliExpress.
+    Your Job:
+    1. FILTER: Decide if the item matches the user request strictly.
+       - If user wants "Coat" and item is "Tool" -> REJECT.
+       - If user wants "Phone" and item is "Case" -> REJECT.
+    2. REWRITE: If item is GOOD, write a short, attractive Hebrew title (max 15 words) with an emoji.
+       - Style: Marketing, Fun, Clean. NO "Aliexpress translation" style.
+    
+    Items:
+    {items_str}
+    
+    Output Format: return a JSON list of objects.
+    Example:
+    [
+        {{"index": 0, "valid": true, "hebrew_title": "מעיל צמר יוקרתי בצבע שמנת - מושלם לחורף! 🧥"}},
+        {{"index": 1, "valid": false}}
+    ]
+    RETURN ONLY THE JSON ARRAY.
     """
+    
     try:
         response = model.generate_content(prompt)
-        ids = [int(s) for s in re.findall(r'\b\d+\b', response.text)]
-        final = [top_20[i] for i in ids if i < len(top_20)]
-        return final[:4] if final else top_20[:4]
-    except:
-        return top_20[:4]
+        text_resp = response.text.strip()
+        # ניקוי פורמט אם ה-AI הוסיף ```json
+        if "```" in text_resp:
+            text_resp = text_resp.replace("```json", "").replace("```", "")
+        
+        ai_decisions = json.loads(text_resp)
+        
+        final_list = []
+        for decision in ai_decisions:
+            if decision.get("valid") == True:
+                idx = decision.get("index")
+                if idx < len(candidates):
+                    # אנחנו מלבישים את הכותרת החדשה של ה-AI על המוצר!
+                    product = candidates[idx]
+                    product['ai_title'] = decision.get("hebrew_title")
+                    final_list.append(product)
+        
+        return final_list[:3] # מחזירים את ה-3 הכי טובים
+        
+    except Exception as e:
+        logging.error(f"AI Rewrite Error: {e}")
+        # במקרה של תקלה ב-AI, מחזירים את המועמדים המקוריים (Fallback)
+        return candidates[:3]
 
 # ==========================================
-# 🛠️ כלי עזר (Link, Collage)
+# 🛠️ כלי עזר
 # ==========================================
 def get_short_link(raw_url):
     if not raw_url: return None
@@ -234,25 +224,29 @@ def get_short_link(raw_url):
 def create_collage(image_urls):
     try:
         images = []
-        for url in image_urls[:4]:
+        for url in image_urls[:3]: # קולאז של 3
             try:
                 r = session.get(url, timeout=3)
                 img = Image.open(io.BytesIO(r.content)).convert('RGB').resize((500,500))
                 images.append(img)
             except: images.append(Image.new('RGB', (500,500), color='#FFFFFF'))
-        while len(images) < 4: images.append(Image.new('RGB', (500,500), color='#FFFFFF'))
         
+        while len(images) < 3: images.append(Image.new('RGB', (500,500), color='#FFFFFF'))
+        
+        # קולאז' של 3 תמונות (1 גדולה, 2 קטנות)
         collage = Image.new('RGB', (1000, 1000), 'white')
-        positions = [(0,0), (500,0), (0,500), (500,500)]
+        collage.paste(images[0].resize((1000, 500)), (0, 0))
+        collage.paste(images[1].resize((500, 500)), (0, 500))
+        collage.paste(images[2].resize((500, 500)), (500, 500))
+        
+        # מספור
         draw = ImageDraw.Draw(collage)
-        
-        for i, img in enumerate(images):
-            collage.paste(img, positions[i])
-            if i < len(image_urls):
-                x, y = positions[i]
-                draw.ellipse((x+20, y+20, x+80, y+80), fill="#FFD700", outline="black", width=3)
-                draw.text((x+42, y+35), str(i+1), fill="black", font_size=50)
-        
+        positions = [(50,50), (50,550), (550,550)]
+        for i, pos in enumerate(positions):
+             x, y = pos
+             draw.ellipse((x, y, x+60, y+60), fill="#FFD700", outline="black", width=3)
+             draw.text((x+20, y+10), str(i+1), fill="black", font_size=40)
+
         output = io.BytesIO()
         collage.save(output, format='JPEG', quality=85)
         output.seek(0)
@@ -274,12 +268,12 @@ def notify_admin(user, query):
 def start(m):
     welcome_msg = (
         "✨ <b>ברוכים הבאים ל-DrDeals Premium</b> 💎\n\n"
-        "נעים להכיר, אני עוזר הקניות האישי שלכם.\n"
-        "אני משתמש באלגוריתם דירוג חכם 📊 כדי למצוא לכם את המוצר המדויק.\n\n"
-        "👇 <b>מה תרצו לחפש היום? (כתבו 'חפש לי...')</b>"
+        "הבוט שלי עובד אחרת: הוא לא סתם מחפש, הוא חושב. 🧠\n"
+        "לכן זה לוקח לו כמה שניות – אבל התוצאות שוות את זה.\n\n"
+        "👇 <b>נסו אותי: כתבו 'חפש לי' ואת שם המוצר.</b>"
     )
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.add("חפש לי רחפן", "חפש לי אוזניות", "חפש לי שעון חכם", "❓ עזרה וטיפים")
+    markup.add("חפש לי רחפן", "חפש לי מעיל", "חפש לי שעון", "❓ עזרה")
     
     try:
         if os.path.exists('welcome.jpg'):
@@ -292,11 +286,7 @@ def start(m):
 
 @bot.message_handler(commands=['help'])
 def help_command(m):
-    bot.send_message(m.chat.id, "💎 <b>טיפ:</b> כתבו **'חפש לי'** ואת שם המוצר המדויק.", parse_mode="HTML")
-
-@bot.message_handler(func=lambda m: "עזרה" in m.text)
-def handle_help_text(m):
-    help_command(m)
+    bot.send_message(m.chat.id, "💡 התחילו ב-**'חפש לי'**.", parse_mode="HTML")
 
 @bot.message_handler(func=lambda m: True)
 def handle_text(m):
@@ -307,65 +297,70 @@ def handle_text(m):
     raw_query = m.text.replace("חפש לי", "").strip()
     notify_admin(m.from_user, raw_query)
     
-    msg = bot.send_message(m.chat.id, f"🔍 <b>מנתח בקשה: {raw_query}...</b>", parse_mode="HTML")
+    # 1. חיווי למשתמש שאנחנו עובדים
+    bot.send_chat_action(m.chat.id, 'typing')
+    msg = bot.send_message(m.chat.id, f"🔍 <b>בודק במאגרים הבינלאומיים עבור: {raw_query}...</b>", parse_mode="HTML")
     
-    # שלב 1: תרגום חובה (אם נכשל - עוצרים)
+    # 2. תרגום (אנגלית בלבד)
     query_en = smart_query_optimizer(raw_query)
-    
     if not query_en:
-        bot.edit_message_text("⚠️ שגיאת תרגום. אנא נסה לכתוב את המוצר באנגלית.", m.chat.id, msg.message_id)
+        bot.edit_message_text("⚠️ לא הצלחתי לתרגם את הבקשה. נסה ניסוח פשוט יותר.", m.chat.id, msg.message_id)
         return
 
-    # שלב 2: חיפוש
-    bot.edit_message_text(f"📊 <b>סורק עבור: {query_en}...</b>", m.chat.id, msg.message_id, parse_mode="HTML")
+    # 3. חיפוש
+    # משהים קצת כדי לתת תחושה של עבודה מעמיקה (וגם לא לחסום את ה-API)
+    time.sleep(1) 
+    bot.edit_message_text(f"📥 <b>מושך מוצרים וסורק איכות...</b>", m.chat.id, msg.message_id, parse_mode="HTML")
     products = get_ali_products(query_en)
 
     if not products:
-        bot.edit_message_text("❌ לא נמצאו מוצרים.", m.chat.id, msg.message_id)
+        bot.edit_message_text("❌ לא נמצאו מוצרים תואמים.", m.chat.id, msg.message_id)
         return
 
-    # שלב 3: סינון קשוח
-    bot.edit_message_text(f"💎 <b>בוחר את הטובים ביותר...</b>", m.chat.id, msg.message_id, parse_mode="HTML")
-    final_list = filter_candidates(products, query_en)
+    # 4. המהפכה: שליחה ל-AI לניתוח וכתיבה מחדש
+    bot.edit_message_text(f"✍️ <b>ה-AI מנתח וכותב תיאורים בעברית... (זה ייקח רגע)</b>", m.chat.id, msg.message_id, parse_mode="HTML")
+    bot.send_chat_action(m.chat.id, 'typing') # מראה שהבוט מקליד
+    
+    # הפונקציה הזו היא שתיצור את ההשהייה הטבעית ואת האיכות
+    final_list = ai_filter_and_rewrite(products, raw_query)
     
     bot.delete_message(m.chat.id, msg.message_id)
 
     if not final_list:
-        # כאן השינוי הגדול: אם הכל סונן (כי הכל היה כלי עבודה), אומרים למשתמש שלא נמצאה התאמה
-        bot.send_message(m.chat.id, f"🤔 לא מצאתי מוצרים שתואמים בדיוק ל-'{raw_query}'.\nנסה להיות ספציפי יותר (למשל: 'מעיל צמר נשים').")
+        bot.send_message(m.chat.id, f"🤔 ה-AI סינן את כל התוצאות כי הן לא היו מדויקות מספיק ל-'{raw_query}'.")
         return
 
+    # 5. הצגה (הפעם עם הטקסט של ה-AI!)
     image_urls = []
-    full_text = ""
+    full_text = f"🧥 <b>נמצאו {len(final_list)} תוצאות מעולות עבורך!</b>\n\n"
     markup = types.InlineKeyboardMarkup(row_width=1)
     
     for i, p in enumerate(final_list):
-        title_full = translate_to_hebrew(p.get('product_title', 'Product'))
-        if len(title_full) > 60:
-            title_display = title_full[:60].rsplit(' ', 1)[0] + "..."
-        else:
-            title_display = title_full
-
+        # שימוש בכותרת שה-AI כתב לנו!
+        title = p.get('ai_title', p.get('product_title'))
         price = safe_float(p.get('target_sale_price', 0))
         orig_price = safe_float(p.get('target_original_price', 0))
         link = get_short_link(p.get('product_detail_url'))
         
-        if not link or not link.startswith('http'): continue
+        if not link: continue
         
         discount_txt = ""
         if orig_price > price:
             percent = int(((orig_price - price) / orig_price) * 100)
-            discount_txt = f" | 📉 <b>{percent}%</b>"
+            discount_txt = f" | 📉 <b>{percent}% הנחה</b>"
 
         image_urls.append(p.get('product_main_image_url'))
         
-        full_text += f"{i+1}. 🏅 <b>{title_display}</b>\n💰 <b>{price}₪</b>{discount_txt}\n🔗 {link}\n\n"
-        markup.add(types.InlineKeyboardButton(f"🛍️ מוצר {i+1}", url=link))
+        full_text += f"{i+1}. {title}\n" # הכותרת כבר מכילה אימוג'ים מה-AI
+        full_text += f"💰 מחיר: <b>{price}₪</b>{discount_txt}\n"
+        full_text += f"🔗 {link}\n\n"
+        
+        markup.add(types.InlineKeyboardButton(f"🛍️ עבור למוצר {i+1}", url=link))
     
     if image_urls:
         collage = create_collage(image_urls)
         if collage:
-            bot.send_photo(m.chat.id, collage, caption=f"🏆 <b>הבחירות המובילות: {raw_query}</b>", parse_mode="HTML")
+            bot.send_photo(m.chat.id, collage, caption=f"🏆 <b>הבחירות של ה-AI</b>", parse_mode="HTML")
     
     full_text += "💎 <b>DrDeals Premium Selection</b>"
     bot.send_message(m.chat.id, full_text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
