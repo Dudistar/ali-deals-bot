@@ -1,5 +1,5 @@
 # ==========================================
-# DrDeals Premium – Text Verification Edition
+# DrDeals Premium – Fashion Logic Edition
 # ==========================================
 
 import telebot
@@ -32,27 +32,27 @@ adapter = HTTPAdapter(max_retries=retry)
 session.mount('https://', adapter)
 
 # ==========================================
-# 📚 מילון אימות טקסטואלי (במקום קטגוריות שנכשלו)
+# 🎨 מפות חכמות: צבעים וסגנונות
 # ==========================================
-# לכל סוג מוצר יש "מילות מפתח חובה".
-# אם הכותרת באנגלית לא מכילה אחת מהן - המוצר נפסל.
-
-VALIDATION_RULES = {
-    'מעיל': ['coat', 'jacket', 'parka', 'trench', 'outerwear', 'blazer', 'cardigan'],
-    'רחפן': ['drone', 'quadcopter', 'uav', 'aircraft'],
-    'שעון': ['watch', 'smartwatch', 'wristband'],
-    'אוזניות': ['headphone', 'earphone', 'earbud', 'headset'],
-    'טלפון': ['phone', 'smartphone', 'mobile', 'cellphone'],
-    'נעליים': ['shoe', 'sneaker', 'boot', 'sandal', 'heel'],
-    'שמלה': ['dress', 'gown', 'skirt']
+COLOR_MAP = {
+    'שמנת': 'Beige', 'בז': 'Beige', 'קרם': 'Beige', 'חול': 'Khaki',
+    'לבן': 'White', 'שחור': 'Black', 'אדום': 'Red',
+    'כחול': 'Blue', 'ירוק': 'Green', 'ורוד': 'Pink'
 }
 
-# תרגום צבעים ידני לדיוק מקסימלי
-COLOR_MAP = {
-    'שמנת': 'Cream', 'בז': 'Beige', 'קרם': 'Cream',
-    'לבן': 'White', 'שחור': 'Black', 'אדום': 'Red',
-    'כחול': 'Blue', 'תכלת': 'Sky Blue', 'ירוק': 'Green',
-    'ורוד': 'Pink', 'זהב': 'Gold', 'כסף': 'Silver'
+# אם המשתמש מחפש "אלגנטי", נחסום את המילים האלו:
+STYLE_BAN_LIST = {
+    'elegant': ['yoga', 'sport', 'hiking', 'camping', 'rain', 'waterproof', 'running', 'gym', 'fitness', 'cycling', 'fishing', 'sun protection'],
+    'formal': ['casual', 'beach', 'home', 'sleep', 'sport'],
+}
+
+# מילות מפתח לחיזוק החיפוש
+STYLE_BOOST = {
+    'אלגנטי': 'Elegant Office Lady Formal',
+    'ערב': 'Evening Party Luxury',
+    'חורף': 'Winter Warm Thick',
+    'צמר': 'Wool Blend',
+    'פוך': 'Down Parka'
 }
 
 # ==========================================
@@ -63,7 +63,7 @@ def generate_sign(params):
     return hashlib.md5(s.encode()).hexdigest().upper()
 
 def get_ali_products(query):
-    # print(f"DEBUG: Searching API for: {query}")
+    # print(f"DEBUG: API Request -> {query}")
     params = {
         "app_key": APP_KEY,
         "method": "aliexpress.affiliate.product.query",
@@ -76,7 +76,8 @@ def get_ali_products(query):
         "target_currency": "ILS",
         "ship_to_country": "IL",
         "sort": "LAST_VOLUME_DESC",
-        "page_size": "50"
+        "page_size": "50",
+        "min_sale_price": "50" # סינון זבל: לא מציגים מעילים מתחת ל-50 שקל!
     }
     params["sign"] = generate_sign(params)
 
@@ -89,33 +90,68 @@ def get_ali_products(query):
     except: return []
 
 # ==========================================
-# 🧹 המסנן הטקסטואלי (Text Validator)
+# 🧠 בונה השאילתות + המסנן
 # ==========================================
-def text_validator(products, must_have_words):
+def construct_query(user_input):
+    """
+    בונה שאילתה חכמה:
+    במקום "מעיל שמנת" -> "Women Coat Beige Elegant Office"
+    """
+    # 1. זיהוי מוצר בסיס (חובה)
+    base_product = "Women Coat" # ברירת מחדל חזקה
+    if "שמלה" in user_input: base_product = "Women Dress"
+    elif "נעליים" in user_input: base_product = "Women Shoes"
+    
+    # 2. המרת צבע
+    color_en = ""
+    for heb, eng in COLOR_MAP.items():
+        if heb in user_input:
+            color_en = eng
+            break
+            
+    # 3. זיהוי סגנון ובוסט
+    style_boost = ""
+    is_elegant = False
+    for heb, boost in STYLE_BOOST.items():
+        if heb in user_input:
+            style_boost += " " + boost
+            if "אלגנטי" in heb or "ערב" in heb:
+                is_elegant = True
+    
+    # הרכבת השאילתה הסופית
+    final_query = f"{base_product} {color_en} {style_boost}".strip()
+    return final_query, is_elegant
+
+def advanced_filter(products, is_elegant):
     clean = []
     
-    # רשימה שחורה גלובלית (ברגים, צינורות, חלקים)
-    blacklist = ["screw", "pipe", "adapter", "connector", "repair tool", "part only", "accessory"]
+    # רשימה שחורה תמידית (כלי עבודה, אביזרים)
+    global_ban = ["screw", "repair", "tool", "connector", "pipe", "adapter", "toy", "accessory"]
+    
+    # רשימה שחורה לסגנון אלגנטי (ספורט וטיולים)
+    sport_ban = STYLE_BAN_LIST['elegant']
 
     for p in products:
         title = p.get("product_title", "").lower()
         
-        # 1. בדיקת רשימה שחורה
-        if any(bad in title for bad in blacklist):
-            continue
+        # 1. העפה של כלי עבודה
+        if any(bad in title for bad in global_ban): continue
 
-        # 2. בדיקת חובה (האם זה באמת מעיל?)
-        # אם המערכת הגדירה מילות חובה (למשל coat, jacket) - חייב להופיע!
-        if must_have_words:
-            if not any(good in title for good in must_have_words):
+        # 2. אם המשתמש רצה אלגנטי - העפה של ספורט/יוגה/טיולים
+        if is_elegant:
+            if any(bad in title for bad in sport_ban):
                 continue
-        
+            
+            # וידוא נוסף: אם זה מעיל גשם זול (Plastic/Raincoat)
+            if "raincoat" in title or "poncho" in title:
+                continue
+
         clean.append(p)
     
     return clean
 
 # ==========================================
-# 🔗 לינקים וקולאז'
+# 🔗 קיצור לינק + תמונות
 # ==========================================
 def get_short_link(url):
     if not url: return None
@@ -157,60 +193,37 @@ def create_collage(urls):
 def handler(m):
     if not m.text.startswith("חפש לי"): return
 
-    query_he = m.text.replace("חפש לי","").strip()
+    user_input = m.text.replace("חפש לי","").strip()
     bot.send_chat_action(m.chat.id, "typing")
-    bot.reply_to(m, f"🕵️‍♂️ מחפש: {query_he}...")
-
-    # 1. הכנת השאילתה (תרגום + התאמת צבעים)
-    # המרת צבע מעברית לאנגלית אם קיים
-    color_en = ""
-    for heb_color, eng_color in COLOR_MAP.items():
-        if heb_color in query_he:
-            color_en = eng_color
-            break
     
-    # תרגום בסיסי של שאר המשפט
-    try:
-        base_en = GoogleTranslator(source='auto', target='en').translate(query_he)
-    except:
-        base_en = query_he
-
-    # אם זיהינו צבע ידנית, נדחוף אותו לחיפוש כדי לחזק את התוצאה
-    if color_en and color_en.lower() not in base_en.lower():
-        final_query = f"{base_en} {color_en}"
-    else:
-        final_query = base_en
-
-    # 2. קביעת מילות אימות (Validation Words)
-    must_have = []
-    for key, words in VALIDATION_RULES.items():
-        if key in query_he:
-            must_have = words
-            break
-
-    # 3. ביצוע החיפוש
-    products = get_ali_products(final_query)
+    # 1. בניית שאילתה חכמה
+    # התוצאה תהיה משהו כמו: "Women Coat Beige Elegant Office Lady"
+    smart_query, is_elegant = construct_query(user_input)
     
-    # 4. סינון לפי טקסט (ולא לפי ID דפוק)
-    valid_products = text_validator(products, must_have)
+    bot.reply_to(m, f"👠 מחפש בקטגוריית אופנה: {smart_query}...")
 
-    # 5. מנגנון גיבוי (אם לא מצאנו עם הצבע הספציפי)
-    if not valid_products and must_have:
-        # מנסים לחפש רק את שם המוצר בלי הצבע והתיאורים
-        # למשל: במקום "Cream Elegant Coat" -> נחפש רק "Women Coat" ונסנן ידנית
-        bot.send_message(m.chat.id, "⚠️ החיפוש המדויק לא הניב תוצאות, מרחיב חיפוש...")
-        fallback_query = must_have[0] + " women" # דוגמה: coat women
+    # 2. משיכה מאליאקספרס (עם סינון מחיר מינימלי ב-API)
+    products = get_ali_products(smart_query)
+
+    # 3. סינון אגרסיבי של ספורט/טיולים
+    final_products = advanced_filter(products, is_elegant)
+
+    # 4. אם הסינון מחק הכל (כי הכל היה ספורט), נסה חיפוש רחב יותר
+    if not final_products and is_elegant:
+        # מוותרים על ה"אלגנטי" בטקסט אבל משאירים את הצבע
+        bot.send_message(m.chat.id, "⚠️ לא נמצאו מעילים אלגנטיים מדויקים, מציג מעילים בצבע המבוקש...")
+        fallback_query = smart_query.replace("Elegant Office Lady Formal", "").strip()
         products = get_ali_products(fallback_query)
-        valid_products = text_validator(products, must_have)
+        final_products = advanced_filter(products, False) # בלי סינון ספורט הדוק
 
-    if not valid_products:
-        bot.send_message(m.chat.id, "🛑 לא נמצאו תוצאות תקינות (סיננתי תוצאות לא רלוונטיות).")
+    if not final_products:
+        bot.send_message(m.chat.id, "🛑 לא נמצאו פריטים תואמים.")
         return
 
-    # 6. הצגה
-    top_3 = valid_products[:3]
+    # 5. הצגה
+    top_3 = final_products[:3]
     images = []
-    text = f"🧥 <b>תוצאות עבור: {query_he}</b>\n\n"
+    text = f"🧥 <b>הבחירות האופנתיות שלי:</b>\n\n"
     kb = types.InlineKeyboardMarkup()
 
     for i, p in enumerate(top_3):
@@ -230,5 +243,5 @@ def handler(m):
     else:
         bot.send_message(m.chat.id, text, parse_mode="HTML", reply_markup=kb)
 
-print("Bot is running with Text Verification Logic...")
+print("Bot is running with Fashion Intelligence...")
 bot.infinity_polling()
