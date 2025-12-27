@@ -1,14 +1,12 @@
 # ==========================================
-# DrDeals Premium – Fashion Logic Edition
+# DrDeals Premium – UNIVERSAL FIX
 # ==========================================
-
 import telebot
 import requests
 import time
 import hashlib
 import logging
 import io
-import random
 from telebot import types
 from PIL import Image, ImageDraw
 from requests.adapters import HTTPAdapter
@@ -32,27 +30,58 @@ adapter = HTTPAdapter(max_retries=retry)
 session.mount('https://', adapter)
 
 # ==========================================
-# 🎨 מפות חכמות: צבעים וסגנונות
+# 🧠 המוח המרכזי: הגדרות לכל מוצר
 # ==========================================
-COLOR_MAP = {
-    'שמנת': 'Beige', 'בז': 'Beige', 'קרם': 'Beige', 'חול': 'Khaki',
+# כאן אנחנו מגדירים לכל מוצר:
+# 1. איך קוראים לו באנגלית (keyword)
+# 2. מה הקטגוריה שלו (cat_id) - כדי למנוע מברגים
+# 3. מה *אסור* שיהיה בו (ban_words)
+# 4. מה המינימום מחיר (min_price) - למנוע זבל
+
+PRODUCT_RULES = {
+    "רחפן": {
+        "en": "Professional Drone 4k",
+        "cat_id": "200002649",
+        "ban_words": ["propeller", "battery", "landing", "pad", "case", "cable", "motor", "arm"],
+        "min_price": "100"
+    },
+    "מעיל": {
+        "en": "Women Elegant Coat",
+        "cat_id": "200001901",
+        "ban_words": ["raincoat", "plastic", "hanger", "hook", "sport", "yoga", "hiking"],
+        "min_price": "50"
+    },
+    "שעון": {
+        "en": "Smart Watch",
+        "cat_id": "200000095",
+        "ban_words": ["strap", "band", "screen protector", "case", "film", "charger"],
+        "min_price": "50"
+    },
+    "אוזניות": {
+        "en": "Wireless Headphones Bluetooth",
+        "cat_id": "63705",
+        "ban_words": ["case", "silicone", "cable", "pad", "tips", "cleaner"],
+        "min_price": "30"
+    },
+    "טלפון": {
+        "en": "Smartphone Global Version",
+        "cat_id": "2000023",
+        "ban_words": ["case", "cover", "screen", "glass", "holder", "cable"],
+        "min_price": "300"
+    },
+    "מצלמה": {
+        "en": "Digital Camera",
+        "cat_id": "200002412",
+        "ban_words": ["tripod", "bag", "lens cap", "strap", "battery"],
+        "min_price": "150"
+    }
+}
+
+# מילות מפתח לצבעים (לזיהוי ושיפור חיפוש)
+COLORS = {
+    'שמנת': 'Beige', 'בז': 'Beige', 'קרם': 'Beige',
     'לבן': 'White', 'שחור': 'Black', 'אדום': 'Red',
     'כחול': 'Blue', 'ירוק': 'Green', 'ורוד': 'Pink'
-}
-
-# אם המשתמש מחפש "אלגנטי", נחסום את המילים האלו:
-STYLE_BAN_LIST = {
-    'elegant': ['yoga', 'sport', 'hiking', 'camping', 'rain', 'waterproof', 'running', 'gym', 'fitness', 'cycling', 'fishing', 'sun protection'],
-    'formal': ['casual', 'beach', 'home', 'sleep', 'sport'],
-}
-
-# מילות מפתח לחיזוק החיפוש
-STYLE_BOOST = {
-    'אלגנטי': 'Elegant Office Lady Formal',
-    'ערב': 'Evening Party Luxury',
-    'חורף': 'Winter Warm Thick',
-    'צמר': 'Wool Blend',
-    'פוך': 'Down Parka'
 }
 
 # ==========================================
@@ -62,8 +91,7 @@ def generate_sign(params):
     s = APP_SECRET + ''.join(f"{k}{v}" for k, v in sorted(params.items())) + APP_SECRET
     return hashlib.md5(s.encode()).hexdigest().upper()
 
-def get_ali_products(query):
-    # print(f"DEBUG: API Request -> {query}")
+def get_ali_products(query, cat_id=None, min_price="10"):
     params = {
         "app_key": APP_KEY,
         "method": "aliexpress.affiliate.product.query",
@@ -77,8 +105,11 @@ def get_ali_products(query):
         "ship_to_country": "IL",
         "sort": "LAST_VOLUME_DESC",
         "page_size": "50",
-        "min_sale_price": "50" # סינון זבל: לא מציגים מעילים מתחת ל-50 שקל!
+        "min_sale_price": min_price
     }
+    if cat_id:
+        params["category_ids"] = cat_id
+    
     params["sign"] = generate_sign(params)
 
     try:
@@ -90,68 +121,28 @@ def get_ali_products(query):
     except: return []
 
 # ==========================================
-# 🧠 בונה השאילתות + המסנן
+# 🧹 המסנן האוניברסלי
 # ==========================================
-def construct_query(user_input):
-    """
-    בונה שאילתה חכמה:
-    במקום "מעיל שמנת" -> "Women Coat Beige Elegant Office"
-    """
-    # 1. זיהוי מוצר בסיס (חובה)
-    base_product = "Women Coat" # ברירת מחדל חזקה
-    if "שמלה" in user_input: base_product = "Women Dress"
-    elif "נעליים" in user_input: base_product = "Women Shoes"
-    
-    # 2. המרת צבע
-    color_en = ""
-    for heb, eng in COLOR_MAP.items():
-        if heb in user_input:
-            color_en = eng
-            break
-            
-    # 3. זיהוי סגנון ובוסט
-    style_boost = ""
-    is_elegant = False
-    for heb, boost in STYLE_BOOST.items():
-        if heb in user_input:
-            style_boost += " " + boost
-            if "אלגנטי" in heb or "ערב" in heb:
-                is_elegant = True
-    
-    # הרכבת השאילתה הסופית
-    final_query = f"{base_product} {color_en} {style_boost}".strip()
-    return final_query, is_elegant
-
-def advanced_filter(products, is_elegant):
+def universal_filter(products, ban_list):
     clean = []
+    # מילים שאסורות בכל המצבים
+    global_ban = ["screw", "repair", "connector", "adapter", "toy", "part", "accessory"]
     
-    # רשימה שחורה תמידית (כלי עבודה, אביזרים)
-    global_ban = ["screw", "repair", "tool", "connector", "pipe", "adapter", "toy", "accessory"]
-    
-    # רשימה שחורה לסגנון אלגנטי (ספורט וטיולים)
-    sport_ban = STYLE_BAN_LIST['elegant']
-
     for p in products:
         title = p.get("product_title", "").lower()
         
-        # 1. העפה של כלי עבודה
+        # בדיקה 1: רשימה גלובלית
         if any(bad in title for bad in global_ban): continue
-
-        # 2. אם המשתמש רצה אלגנטי - העפה של ספורט/יוגה/טיולים
-        if is_elegant:
-            if any(bad in title for bad in sport_ban):
-                continue
+        
+        # בדיקה 2: רשימה ספציפית למוצר (אם יש)
+        if ban_list:
+            if any(bad in title for bad in ban_list): continue
             
-            # וידוא נוסף: אם זה מעיל גשם זול (Plastic/Raincoat)
-            if "raincoat" in title or "poncho" in title:
-                continue
-
         clean.append(p)
-    
     return clean
 
 # ==========================================
-# 🔗 קיצור לינק + תמונות
+# 🔗 לינקים וקולאז'
 # ==========================================
 def get_short_link(url):
     if not url: return None
@@ -195,35 +186,61 @@ def handler(m):
 
     user_input = m.text.replace("חפש לי","").strip()
     bot.send_chat_action(m.chat.id, "typing")
+
+    # 1. זיהוי מוצר מתוך הטקסט
+    detected_rule = None
+    rule_name = None
     
-    # 1. בניית שאילתה חכמה
-    # התוצאה תהיה משהו כמו: "Women Coat Beige Elegant Office Lady"
-    smart_query, is_elegant = construct_query(user_input)
+    # בדיקה איזו מילת מפתח (רחפן, מעיל...) מופיעה בטקסט
+    for key, rule in PRODUCT_RULES.items():
+        if key in user_input:
+            detected_rule = rule
+            rule_name = key
+            break
     
-    bot.reply_to(m, f"👠 מחפש בקטגוריית אופנה: {smart_query}...")
+    # 2. בניית השאילתה
+    query_en = ""
+    cat_id = None
+    ban_list = []
+    min_price = "10"
 
-    # 2. משיכה מאליאקספרס (עם סינון מחיר מינימלי ב-API)
-    products = get_ali_products(smart_query)
-
-    # 3. סינון אגרסיבי של ספורט/טיולים
-    final_products = advanced_filter(products, is_elegant)
-
-    # 4. אם הסינון מחק הכל (כי הכל היה ספורט), נסה חיפוש רחב יותר
-    if not final_products and is_elegant:
-        # מוותרים על ה"אלגנטי" בטקסט אבל משאירים את הצבע
-        bot.send_message(m.chat.id, "⚠️ לא נמצאו מעילים אלגנטיים מדויקים, מציג מעילים בצבע המבוקש...")
-        fallback_query = smart_query.replace("Elegant Office Lady Formal", "").strip()
-        products = get_ali_products(fallback_query)
-        final_products = advanced_filter(products, False) # בלי סינון ספורט הדוק
-
-    if not final_products:
-        bot.send_message(m.chat.id, "🛑 לא נמצאו פריטים תואמים.")
+    if detected_rule:
+        # מקרה א': זיהינו מוצר מוכר (רחפן, מעיל...)
+        # בודקים אם יש צבע בבקשה
+        color_en = ""
+        for heb_col, eng_col in COLORS.items():
+            if heb_col in user_input:
+                color_en = eng_col
+                break
+        
+        # בונים שאילתה: "Women Elegant Coat Beige"
+        query_en = f"{detected_rule['en']} {color_en}".strip()
+        cat_id = detected_rule['cat_id']
+        ban_list = detected_rule['ban_words']
+        min_price = detected_rule['min_price']
+        
+        bot.reply_to(m, f"🔎 זיהיתי: {rule_name}. מחפש בקטגוריה המתאימה...")
+        
+    else:
+        # מקרה ב': חיפוש כללי (לא מוכר)
+        bot.reply_to(m, f"🔎 מחפש בכל אליאקספרס: {user_input}...")
+        try: query_en = GoogleTranslator(source='auto', target='en').translate(user_input)
+        except: query_en = user_input
+    
+    # 3. ביצוע החיפוש
+    products = get_ali_products(query_en, cat_id, min_price)
+    
+    # 4. סינון
+    clean_products = universal_filter(products, ban_list)
+    
+    # 5. הצגה
+    if not clean_products:
+        bot.send_message(m.chat.id, "🛑 לא נמצאו תוצאות איכותיות.")
         return
 
-    # 5. הצגה
-    top_3 = final_products[:3]
+    top_3 = clean_products[:3]
     images = []
-    text = f"🧥 <b>הבחירות האופנתיות שלי:</b>\n\n"
+    text = f"🛍️ **תוצאות עבור: {user_input}**\n\n"
     kb = types.InlineKeyboardMarkup()
 
     for i, p in enumerate(top_3):
@@ -235,7 +252,7 @@ def handler(m):
         images.append(p.get("product_main_image_url"))
 
         text += f"{i+1}. {title[:55]}...\n💰 <b>{price}</b>\n🔗 {link}\n\n"
-        kb.add(types.InlineKeyboardButton(f"🛍️ לרכישה {i+1}", url=link))
+        kb.add(types.InlineKeyboardButton(f"🛒 לרכישה {i+1}", url=link))
 
     if images:
         try: bot.send_photo(m.chat.id, create_collage(images), caption=text, parse_mode="HTML", reply_markup=kb)
@@ -243,5 +260,5 @@ def handler(m):
     else:
         bot.send_message(m.chat.id, text, parse_mode="HTML", reply_markup=kb)
 
-print("Bot is running with Fashion Intelligence...")
+print("Bot is running with UNIVERSAL Logic...")
 bot.infinity_polling()
