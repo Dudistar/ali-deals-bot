@@ -1,5 +1,5 @@
 # ==========================================
-# DrDeals Premium – PRODUCTION VERSION (AI Powered)
+# DrDeals Premium – FULL RICH VERSION (Secure + AI + Details)
 # ==========================================
 import telebot
 import requests
@@ -18,23 +18,21 @@ from requests.packages.urllib3.util.retry import Retry
 from deep_translator import GoogleTranslator
 
 # ==========================================
-# 🔑 ניהול מפתח חכם (גיבוי כפול)
+# 🔑 טעינת מפתח מאובטחת
 # ==========================================
-# 1. מנסה לקחת מהשרת
-KEY = os.environ.get("GEMINI_API_KEY")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-# 2. אם אין בשרת, משתמש במפתח שסיפקת כגיבוי קשיח
-if not KEY:
-    KEY = "AIzaSyBzR-46-B13sdh1UIPVM2hOJDjIR_8ZQ-4"
-
-try:
-    genai.configure(api_key=KEY)
-    model = genai.GenerativeModel('gemini-pro')
-    HAS_AI = True
-    print("✅ AI Connected Successfully!")
-except Exception as e:
-    print(f"⚠️ AI Error: {e}")
-    HAS_AI = False
+HAS_AI = False
+if GEMINI_API_KEY:
+    try:
+        genai.configure(api_key=GEMINI_API_KEY)
+        model = genai.GenerativeModel('gemini-pro')
+        HAS_AI = True
+        print("✅ AI Connected via Server Variables!")
+    except Exception as e:
+        print(f"⚠️ AI Connection Error: {e}")
+else:
+    print("❌ Critical Error: GEMINI_API_KEY is missing in Railway Variables!")
 
 # ==========================================
 # ⚙️ הגדרות
@@ -52,28 +50,22 @@ adapter = HTTPAdapter(max_retries=Retry(connect=3, backoff_factor=1))
 session.mount('https://', adapter)
 
 # ==========================================
-# 🧠 המוח: ניתוח מוצר (בלי רשימות חסימה!)
+# 🧠 המוח: AI שכותב גם תיאור!
 # ==========================================
-def analyze_product(user_query, product_title, price):
-    """
-    שולח ל-AI כדי להחליט אם המוצר מתאים ולכתוב כותרת.
-    """
+def analyze_with_ai(user_query, product_title, price, rating):
     if not HAS_AI:
-        return {"valid": True, "title": product_title[:50]}
+        return {"valid": True, "title": product_title[:50], "desc": "מוצר איכותי מאליאקספרס"}
 
     prompt = f"""
-    Acting as a shopping assistant.
+    Task: Shopping Assistant.
     User Search: "{user_query}"
-    Found Product: "{product_title}"
-    Price: {price} ILS.
+    Found Item: "{product_title}" (Price: {price}, Rating: {rating})
     
-    Task:
-    1. RELEVANCE CHECK: Is the product logicallly related?
-       - Search: "T-Shirt for men". Product: "Cotton Summer Tee" -> VALID.
-       - Search: "T-Shirt". Product: "Plastic Hanger" -> INVALID.
-    2. WRITING: If valid, write a clean Hebrew title (max 6 words).
+    1. MATCH: Is this item relevant? (User "Drone" != Item "Cable").
+    2. TITLE: Short Hebrew Title (max 5 words).
+    3. DESC: A short, punchy marketing sentence in Hebrew (max 8 words).
     
-    Output JSON: {{"valid": true, "title": "..."}}
+    Output JSON: {{"valid": true, "title": "...", "desc": "..."}}
     """
     
     try:
@@ -81,8 +73,7 @@ def analyze_product(user_query, product_title, price):
         text = response.text.replace("```json", "").replace("```", "").strip()
         return json.loads(text)
     except:
-        # במקרה של שגיאה ב-AI, ברירת המחדל היא לאשר (כדי לא להחזיר ריק)
-        return {"valid": True, "title": product_title[:50]}
+        return {"valid": True, "title": product_title[:50], "desc": "מוצר מומלץ"}
 
 # ==========================================
 # 🔧 תשתית אליאקספרס
@@ -92,13 +83,12 @@ def generate_sign(params):
     return hashlib.md5(s.encode()).hexdigest().upper()
 
 def get_ali_products(query):
-    # מחיר מינימום נמוך (5 ש"ח) כדי לא לפספס חולצות זולות
     params = {
         "app_key": APP_KEY, "method": "aliexpress.affiliate.product.query",
         "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "format": "json",
         "sign_method": "md5", "v": "2.0", "partner_id": "top-autopilot",
         "keywords": query, "target_currency": "ILS", "ship_to_country": "IL",
-        "sort": "LAST_VOLUME_DESC", "page_size": "15", "min_sale_price": "5"
+        "sort": "LAST_VOLUME_DESC", "page_size": "20", "min_sale_price": "5"
     }
     params["sign"] = generate_sign(params)
     try:
@@ -122,8 +112,7 @@ def get_short_link(url):
     try:
         r = session.post("https://api-sg.aliexpress.com/sync", data=params, timeout=5).json()
         link = r["aliexpress_affiliate_link_generate_response"]["resp_result"]["result"]["promotion_links"]["promotion_link"][0]
-        final = link.get("promotion_short_link") or link.get("promotion_link")
-        return final if final else clean
+        return link.get("promotion_short_link") or link.get("promotion_link")
     except: return clean
 
 def create_collage(urls):
@@ -149,65 +138,65 @@ def handler(m):
     if not m.text.startswith("חפש לי"): return
     query_he = m.text.replace("חפש לי","").strip()
     
-    # שלב 1: חיווי
-    msg = bot.reply_to(m, f"🤖 ה-AI מנתח בקשה: '{query_he}'...\n🛡️ סורק את המאגר (נא להמתין)...")
+    msg = bot.reply_to(m, f"🕵️‍♂️ ה-AI סורק את הרשת עבור: '{query_he}'...\n(כולל דירוגים וניתוח חכם)")
     bot.send_chat_action(m.chat.id, "typing")
 
-    # תרגום לחיפוש (לא חובה AI לזה, גוגל מספיק טוב ומהיר יותר לשלב הזה)
     try:
         query_en = GoogleTranslator(source='auto', target='en').translate(query_he)
     except: query_en = query_he
 
-    print(f"Searching: {query_en}")
-
-    # שלב 2: משיכה גולמית
     raw_products = get_ali_products(query_en)
     
-    # שלב 3: סינון AI חכם
     final_products = []
-    
     for p in raw_products:
         if len(final_products) >= 4: break
-        
-        # השהייה קטנטנה למניעת עומס
         time.sleep(0.3)
         bot.send_chat_action(m.chat.id, "typing")
         
-        # בדיקת AI
-        ai_result = analyze_product(query_he, p["product_title"], p["target_sale_price"])
+        # שליפת נתונים נוספים לניתוח
+        price = p.get("target_sale_price")
+        rating = p.get("evaluate_rate", "4.8")
+
+        ai_result = analyze_with_ai(query_he, p["product_title"], price, rating)
         
         if ai_result.get("valid"):
             p["display_title"] = ai_result.get("title")
+            p["display_desc"] = ai_result.get("desc") # התיאור החדש!
             final_products.append(p)
             print(f"✅ Approved: {p['display_title']}")
 
-    # מנגנון חירום: אם ה-AI סינן הכל (נדיר), נחזיר את ה-2 הכי רלוונטיים כדי לא להחזיר ריק
     if not final_products and raw_products:
-        final_products = raw_products[:2]
-        for p in final_products: p["display_title"] = p["product_title"][:50]
+        final_products = raw_products[:2] 
+        for p in final_products: 
+            p["display_title"] = p["product_title"][:40]
+            p["display_desc"] = "מוצר פופולרי מאליאקספרס"
 
     if not final_products:
-        bot.edit_message_text("🛑 לא נמצאו מוצרים תואמים במאגר.", m.chat.id, msg.message_id)
+        bot.edit_message_text("🛑 לא נמצאו מוצרים.", m.chat.id, msg.message_id)
         return
 
-    # שלב 4: הצגה
     bot.delete_message(m.chat.id, msg.message_id)
     
     images = []
-    text = f"🤖 **תוצאות AI עבור: {query_he}**\n\n"
+    text = f"🛍️ **תוצאות עבור: {query_he}**\n\n"
     kb = types.InlineKeyboardMarkup()
 
     for i, p in enumerate(final_products):
         price = p.get("target_sale_price")
-        # השגת לינק מקוצר
+        # הוספתי כאן את הנתונים החסרים:
+        rating = p.get("evaluate_rate", "4.9") 
+        orders = p.get("last_volume", "100+")
+        
         link = get_short_link(p.get("product_detail_url"))
         if not link: continue
 
         images.append(p.get("product_main_image_url"))
         
+        # === עיצוב ההודעה המלא ===
         text += f"{i+1}. 🥇 {p['display_title']}\n"
-        text += f"💰 מחיר: {price}₪\n"
-        text += f"{link}\n\n" # הקישור פתוח וברור
+        text += f"ℹ️ {p['display_desc']}\n"  # התיאור בעברית
+        text += f"💰 {price}₪ | ⭐ {rating} | 🛒 {orders}\n" # הנתונים
+        text += f"{link}\n\n"
         
         kb.add(types.InlineKeyboardButton(f"🛍️ מוצר {i+1}", url=link))
 
@@ -217,5 +206,5 @@ def handler(m):
     else:
         bot.send_message(m.chat.id, text, parse_mode="Markdown", reply_markup=kb)
 
-print("🚀 Bot Running (Final Production Version)...")
+print("🚀 Full Feature Bot Running...")
 bot.infinity_polling(timeout=20, long_polling_timeout=10)
