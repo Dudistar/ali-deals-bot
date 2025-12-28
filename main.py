@@ -1,7 +1,7 @@
 # ==========================================
-# DrDeals Premium – THE COMPLETE INTEGRATION
+# DrDeals Premium – "THE CLONE" (Option A)
 # ==========================================
-# כולל: הבלש (Spy), בינה מלאכותית (AI), פרטים עשירים, יציבות HTML, ואבטחה.
+# 🏆 גירסת הפנתאון: קולאז' תמונות, מספרים צהובים, AI חכם, ומלשינון.
 
 import telebot
 import requests
@@ -12,20 +12,21 @@ import io
 import sys
 import os
 import json
-import google.generativeai as genai
+import random
 from telebot import types
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont # המנוע הגרפי
 from requests.adapters import HTTPAdapter
 from requests.packages.urllib3.util.retry import Retry
 from deep_translator import GoogleTranslator
+import google.generativeai as genai
 
 # ==========================================
-# 👮 הגדרות הבלש (המלשינון)
+# 👮 הגדרות הבלש (מי מקבל דיווחים?)
 # ==========================================
-ADMIN_ID = 173837076  # המספר שלך לקבלת התראות
+ADMIN_ID = 173837076
 
 # ==========================================
-# 🔑 טעינת מפתח מאובטחת
+# 🔑 טעינת מפתח AI (מאובטח)
 # ==========================================
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
@@ -39,10 +40,10 @@ if GEMINI_API_KEY:
     except Exception as e:
         print(f"⚠️ AI Connection Error: {e}")
 else:
-    print("❌ Critical: GEMINI_API_KEY missing in Railway Variables!")
+    print("❌ CRITICAL: GEMINI_API_KEY missing in Railway!")
 
 # ==========================================
-# ⚙️ הגדרות הבוט
+# ⚙️ הגדרות אליאקספרס ובוט
 # ==========================================
 BOT_TOKEN = "8575064945:AAH_2WmHMH25TMFvt4FM6OWwfqFcDAaqCPw"
 APP_KEY = "523460"
@@ -52,40 +53,116 @@ TRACKING_ID = "DrDeals"
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s', handlers=[logging.StreamHandler(sys.stdout)])
 bot = telebot.TeleBot(BOT_TOKEN)
 
+# חיבור אינטרנט יציב
 session = requests.Session()
-adapter = HTTPAdapter(max_retries=Retry(connect=3, backoff_factor=1))
+adapter = HTTPAdapter(max_retries=Retry(connect=3, read=3, redirect=3, backoff_factor=1))
 session.mount('https://', adapter)
 
 # ==========================================
-# 🧠 פונקציות עזר (ניקוי ו-AI)
+# 🎨 המנוע הגרפי (יצירת הקולאז' עם המספרים)
+# ==========================================
+def get_font():
+    """מנסה לטעון פונט נורמלי מהשרת כדי שהמספרים יהיו יפים"""
+    font_paths = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "arial.ttf"
+    ]
+    for path in font_paths:
+        try:
+            return ImageFont.truetype(path, 60) # גודל פונט 60
+        except:
+            continue
+    return ImageFont.load_default() # ברירת מחדל אם לא מצא כלום
+
+def create_collage_with_numbers(urls):
+    """יוצר תמונה אחת מ-4 תמונות ומוסיף עיגולים צהובים עם מספרים"""
+    images = []
+    # הורדת התמונות
+    for u in urls[:4]:
+        try:
+            resp = session.get(u, timeout=4)
+            img = Image.open(io.BytesIO(resp.content)).convert("RGB").resize((500, 500))
+            images.append(img)
+        except:
+            # במקרה של תקלה - ריבוע לבן
+            images.append(Image.new("RGB", (500, 500), "white"))
+    
+    # השלמה ל-4 אם חסר
+    while len(images) < 4:
+        images.append(Image.new("RGB", (500, 500), "white"))
+
+    # יצירת הקנבס (1000x1000)
+    canvas = Image.new("RGB", (1000, 1000), "white")
+    canvas.paste(images[0], (0, 0))
+    canvas.paste(images[1], (500, 0))
+    canvas.paste(images[2], (0, 500))
+    canvas.paste(images[3], (500, 500))
+
+    # ציור המספרים
+    draw = ImageDraw.Draw(canvas)
+    font = get_font()
+    
+    # מיקומים של העיגולים (צד שמאל למעלה של כל תמונה)
+    # פורמט: (x, y) של הפינה השמאלית העליונה של הריבוע
+    positions = [(20, 20), (520, 20), (20, 520), (520, 520)]
+    
+    for i, (x, y) in enumerate(positions):
+        # ציור עיגול צהוב
+        box = [x, y, x+80, y+80] # גודל העיגול
+        draw.ellipse(box, fill="#FFD700", outline="black", width=3)
+        
+        # כתיבת המספר (ממורכז)
+        num_str = str(i + 1)
+        
+        # חישוב מרכז בערך (תלוי בפונט, כאן זה קירוב טוב)
+        text_x = x + 25
+        text_y = y + 10
+        if "DejaVu" in str(font): # כיוונון עדין לפונט של לינוקס
+             text_x = x + 22
+             text_y = y + 5
+
+        draw.text((text_x, text_y), num_str, fill="black", font=font)
+
+    # שמירה לזיכרון
+    out = io.BytesIO()
+    canvas.save(out, "JPEG", quality=90)
+    out.seek(0)
+    return out
+
+# ==========================================
+# 🧠 המוח (AI + HTML Cleaner)
 # ==========================================
 def escape_html(text):
-    """מונע קריסות כשיש תווים מיוחדים בשם המוצר"""
     if not text: return ""
-    return text.replace("<", "&lt;").replace(">", "&gt;").replace("&", "&amp;")
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 def analyze_with_ai(user_query, product_title, price, rating):
-    """המוח: מחליט אם המוצר תואם, וכותב כותרת ותיאור"""
+    """בודק אם המוצר איכותי וכותב כותרת מחדש"""
     if not HAS_AI:
-        return {"valid": True, "title": product_title[:50], "desc": "מוצר פופולרי מאליאקספרס"}
+        return {"valid": True, "title": product_title[:40], "desc": "מוצר פופולרי"}
 
     prompt = f"""
-    Task: Shopping Assistant.
-    User Search: "{user_query}"
-    Found Item: "{product_title}" (Price: {price}, Rating: {rating})
+    Role: Senior eCommerce Buyer.
+    Task: Filter & Rename AliExpress Product.
     
-    1. MATCH: Is this item relevant? (User "Drone" != Item "Cable").
-    2. TITLE: Short Hebrew Title (max 5 words).
-    3. DESC: Short Hebrew marketing sentence (max 8 words).
+    User Query (Hebrew): "{user_query}"
+    Product Title (English/Gibberish): "{product_title}"
+    Price: {price} ILS, Rating: {rating}
     
-    Output JSON: {{"valid": true, "title": "...", "desc": "..."}}
+    Rules:
+    1. STRICT FILTER: If product is irrelevant (e.g. user wants "Drone" and this is "Propeller"), set valid=false.
+    2. REWRITE: Write a CLEAN, ATTRACTIVE Hebrew title (max 5-6 words). Do not translate - Rewrite!
+    3. PITCH: Write a 4-5 word marketing hook in Hebrew.
+    
+    Output JSON: {{"valid": true, "title": "רחפן מקצועי 4K", "desc": "צילום יציב ואיכותי"}}
     """
     try:
         response = model.generate_content(prompt)
         text = response.text.replace("```json", "").replace("```", "").strip()
         return json.loads(text)
     except:
-        return {"valid": True, "title": product_title[:50], "desc": "מוצר מומלץ ואיכותי"}
+        return {"valid": True, "title": product_title[:40], "desc": "מוצר מומלץ"}
 
 # ==========================================
 # 🔧 תשתית אליאקספרס
@@ -95,12 +172,13 @@ def generate_sign(params):
     return hashlib.md5(s.encode()).hexdigest().upper()
 
 def get_ali_products(query):
+    # מחיר מינימום 10 ש"ח כדי לסנן זבל מוחלט
     params = {
         "app_key": APP_KEY, "method": "aliexpress.affiliate.product.query",
         "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "format": "json",
         "sign_method": "md5", "v": "2.0", "partner_id": "top-autopilot",
         "keywords": query, "target_currency": "ILS", "ship_to_country": "IL",
-        "sort": "LAST_VOLUME_DESC", "page_size": "20", "min_sale_price": "5"
+        "sort": "LAST_VOLUME_DESC", "page_size": "20", "min_sale_price": "10"
     }
     params["sign"] = generate_sign(params)
     try:
@@ -127,41 +205,26 @@ def get_short_link(url):
         return link.get("promotion_short_link") or link.get("promotion_link")
     except: return clean
 
-def create_collage(urls):
-    imgs = []
-    for u in urls[:4]:
-        try:
-            img = Image.open(io.BytesIO(session.get(u, timeout=5).content)).resize((500,500))
-            imgs.append(img)
-        except: imgs.append(Image.new("RGB",(500,500),"white"))
-    while len(imgs)<4: imgs.append(Image.new("RGB",(500,500),"white"))
-    canvas = Image.new("RGB",(1000,1000),"white")
-    canvas.paste(imgs[0],(0,0)); canvas.paste(imgs[1],(500,0))
-    canvas.paste(imgs[2],(0,500)); canvas.paste(imgs[3],(500,500))
-    out = io.BytesIO()
-    canvas.save(out,"JPEG",quality=85); out.seek(0)
-    return out
-
 # ==========================================
-# 🚀 בוט ראשי
+# 🚀 הבוט הראשי
 # ==========================================
 @bot.message_handler(func=lambda m: True)
 def handler(m):
     if not m.text.startswith("חפש לי"): return
     query_he = m.text.replace("חפש לי","").strip()
     
-    # === 1. הבלש (Spy) ===
+    # === 1. מלשינון (Spy) ===
     try:
         user = m.from_user
-        info = f"👤 <b>משתמש:</b> {user.first_name} (@{user.username})\n🔍 <b>חיפש:</b> {query_he}"
-        bot.send_message(ADMIN_ID, f"🔔 <b>התראה חדשה!</b>\n{info}", parse_mode="HTML")
-    except Exception as e:
-        print(f"Spy Error: {e}")
+        info = f"👤 <b>משתמש:</b> {user.first_name}\n🔍 <b>חיפש:</b> {query_he}"
+        bot.send_message(ADMIN_ID, f"🕵️‍♂️ <b>התראה חדשה!</b>\n{info}", parse_mode="HTML")
+    except: pass
 
-    # === 2. חיווי למשתמש ===
-    msg = bot.reply_to(m, f"🔎 מחפש את הטובים ביותר עבור: <b>{query_he}</b>...", parse_mode="HTML")
-    bot.send_chat_action(m.chat.id, "typing")
+    # === 2. חיווי התחלתי ===
+    status_msg = bot.reply_to(m, f"🔎 מחפש את הטובים ביותר עבור: <b>{escape_html(query_he)}</b>...", parse_mode="HTML")
+    bot.send_chat_action(m.chat.id, "upload_photo") # משדר "מעלה תמונה" כדי לקנות זמן
 
+    # תרגום
     try:
         query_en = GoogleTranslator(source='auto', target='en').translate(query_he)
     except: query_en = query_he
@@ -170,71 +233,77 @@ def handler(m):
     raw_products = get_ali_products(query_en)
     final_products = []
     
+    # לולאת סינון חכמה
     for p in raw_products:
         if len(final_products) >= 4: break
-        time.sleep(0.3) # השהייה קטנה למניעת עומס
-        bot.send_chat_action(m.chat.id, "typing")
         
-        # איסוף נתונים ל-AI ולתצוגה
+        # בדיקת איכות מהירה לפני AI
+        try:
+            rating = float(p.get("evaluate_rate", "0"))
+            if rating < 4.0: continue # סינון מוצרים גרועים
+        except: pass
+
+        # שליחה ל-AI
         price = p.get("target_sale_price")
-        rating = p.get("evaluate_rate", "4.8")
-        
-        ai_result = analyze_with_ai(query_he, p["product_title"], price, rating)
+        ai_result = analyze_with_ai(query_he, p["product_title"], price, p.get("evaluate_rate", "4.5"))
         
         if ai_result.get("valid"):
             p["display_title"] = ai_result.get("title")
             p["display_desc"] = ai_result.get("desc")
             final_products.append(p)
-            print(f"✅ Approved: {p['display_title']}")
+            print(f"✅ AI Approved: {p['display_title']}")
+        else:
+            print(f"🗑️ AI Rejected: {p['product_title'][:20]}")
 
-    # מנגנון גיבוי: אם לא נמצא כלום, מביאים את ה-2 הכי רלוונטיים (כדי לא להחזיר ריק)
-    if not final_products and raw_products:
-        final_products = raw_products[:2]
-        for p in final_products: 
-            p["display_title"] = p["product_title"][:40]
-            p["display_desc"] = "זמין במלאי"
-
+    # אם לא מצאנו כלום
     if not final_products:
-        bot.edit_message_text("🛑 לא נמצאו מוצרים תואמים.", m.chat.id, msg.message_id)
+        bot.delete_message(m.chat.id, status_msg.message_id)
+        bot.send_message(m.chat.id, "🤔 לא מצאתי מוצרים שעומדים בסטנדרט האיכות.\nנסה לשנות את מילות החיפוש.")
         return
 
-    # === 4. בניית התשובה העשירה ===
-    bot.delete_message(m.chat.id, msg.message_id)
-    
-    images = []
+    # === 4. יצירת הקולאז' (The Magic) ===
+    image_urls = [p.get("product_main_image_url") for p in final_products]
+    collage_bytes = create_collage_with_numbers(image_urls)
+
+    # === 5. בניית הטקסט והכפתורים ===
     text = f"🛍️ <b>תוצאות עבור: {escape_html(query_he)}</b>\n\n"
     kb = types.InlineKeyboardMarkup()
-
+    
     for i, p in enumerate(final_products):
         price = p.get("target_sale_price")
-        rating = p.get("evaluate_rate", "4.9")
+        rating = p.get("evaluate_rate", "4.8")
         orders = p.get("last_volume", "100+")
-        
         link = get_short_link(p.get("product_detail_url"))
-        if not link: continue
-
-        images.append(p.get("product_main_image_url"))
         
-        # שימוש ב-HTML בטוח למניעת קריסות
+        if not link: continue # לא אמור לקרות
+        
+        # בניית שורה בטקסט
+        # פורמט: 1. כותרת (מודגש) -> תיאור (נטוי) -> נתונים
         title = escape_html(str(p['display_title']))
         desc = escape_html(str(p['display_desc']))
         
-        # פורמט ההודעה המלא והעשיר
-        text += f"{i+1}. 🥇 <b>{title}</b>\n"
+        text += f"<b>{i+1}. {title}</b>\n"
         text += f"ℹ️ <i>{desc}</i>\n"
-        text += f"💰 {price}₪ | ⭐ {rating} | 🛒 {orders}\n"
-        text += f"{link}\n\n"
+        text += f"💰 {price}₪  |  ⭐ {rating}  |  🛒 {orders}\n"
+        text += f"🔗 <a href='{link}'>לרכישה לחץ כאן</a>\n\n"
         
-        kb.add(types.InlineKeyboardButton(f"🛍️ מוצר {i+1}", url=link))
+        # כפתור
+        btn_text = f"🛒 מוצר {i+1} - {price}₪"
+        kb.add(types.InlineKeyboardButton(btn_text, url=link))
 
-    if images:
-        try: 
-            bot.send_photo(m.chat.id, create_collage(images), caption=text, parse_mode="HTML", reply_markup=kb)
-        except Exception as e:
-            print(f"Error sending photo: {e}")
-            bot.send_message(m.chat.id, text, parse_mode="HTML", reply_markup=kb)
-    else:
-        bot.send_message(m.chat.id, text, parse_mode="HTML", reply_markup=kb)
+    # === 6. שליחה ===
+    bot.delete_message(m.chat.id, status_msg.message_id)
+    try:
+        bot.send_photo(
+            m.chat.id, 
+            collage_bytes, 
+            caption=text, 
+            parse_mode="HTML", 
+            reply_markup=kb
+        )
+    except Exception as e:
+        print(f"Send Error: {e}")
+        bot.send_message(m.chat.id, "שגיאה בשליחת התמונה, נסה שוב.")
 
-print("🚀 DrDeals FULLY INTEGRATED is running...")
-bot.infinity_polling(timeout=20, long_polling_timeout=10)
+print("🚀 DrDeals 'The Clone' is Live on Railway...")
+bot.infinity_polling(timeout=25, long_polling_timeout=10)
