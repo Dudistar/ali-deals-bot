@@ -1,5 +1,5 @@
 # ==========================================
-# DrDeals Premium – FULL RICH VERSION (Secure + AI + Details)
+# DrDeals Premium – FINAL PRODUCTION (With Spy & AI)
 # ==========================================
 import telebot
 import requests
@@ -18,6 +18,12 @@ from requests.packages.urllib3.util.retry import Retry
 from deep_translator import GoogleTranslator
 
 # ==========================================
+# 👮 הגדרות הבלש
+# ==========================================
+# הנה המספר שלך - הבוט ישלח לכאן את הדיווחים
+ADMIN_ID = 173837076
+
+# ==========================================
 # 🔑 טעינת מפתח מאובטחת
 # ==========================================
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -32,10 +38,10 @@ if GEMINI_API_KEY:
     except Exception as e:
         print(f"⚠️ AI Connection Error: {e}")
 else:
-    print("❌ Critical Error: GEMINI_API_KEY is missing in Railway Variables!")
+    print("❌ Critical: GEMINI_API_KEY missing in Railway Variables!")
 
 # ==========================================
-# ⚙️ הגדרות
+# ⚙️ הגדרות הבוט
 # ==========================================
 BOT_TOKEN = "8575064945:AAH_2WmHMH25TMFvt4FM6OWwfqFcDAaqCPw"
 APP_KEY = "523460"
@@ -50,11 +56,15 @@ adapter = HTTPAdapter(max_retries=Retry(connect=3, backoff_factor=1))
 session.mount('https://', adapter)
 
 # ==========================================
-# 🧠 המוח: AI שכותב גם תיאור!
+# 🧠 פונקציות עזר (ניקוי ו-AI)
 # ==========================================
+def escape_html(text):
+    if not text: return ""
+    return text.replace("<", "&lt;").replace(">", "&gt;").replace("&", "&amp;")
+
 def analyze_with_ai(user_query, product_title, price, rating):
     if not HAS_AI:
-        return {"valid": True, "title": product_title[:50], "desc": "מוצר איכותי מאליאקספרס"}
+        return {"valid": True, "title": product_title[:50], "desc": "מוצר פופולרי"}
 
     prompt = f"""
     Task: Shopping Assistant.
@@ -63,11 +73,10 @@ def analyze_with_ai(user_query, product_title, price, rating):
     
     1. MATCH: Is this item relevant? (User "Drone" != Item "Cable").
     2. TITLE: Short Hebrew Title (max 5 words).
-    3. DESC: A short, punchy marketing sentence in Hebrew (max 8 words).
+    3. DESC: Short Hebrew marketing sentence (max 8 words).
     
     Output JSON: {{"valid": true, "title": "...", "desc": "..."}}
     """
-    
     try:
         response = model.generate_content(prompt)
         text = response.text.replace("```json", "").replace("```", "").strip()
@@ -138,7 +147,16 @@ def handler(m):
     if not m.text.startswith("חפש לי"): return
     query_he = m.text.replace("חפש לי","").strip()
     
-    msg = bot.reply_to(m, f"🕵️‍♂️ ה-AI סורק את הרשת עבור: '{query_he}'...\n(כולל דירוגים וניתוח חכם)")
+    # === דיווח למנהל (Spy) ===
+    try:
+        user = m.from_user
+        info = f"👤 <b>משתמש:</b> {user.first_name} (@{user.username})\n🔍 <b>חיפש:</b> {query_he}"
+        bot.send_message(ADMIN_ID, f"🔔 <b>התראה חדשה!</b>\n{info}", parse_mode="HTML")
+    except Exception as e:
+        print(f"Spy Error: {e}")
+
+    # === תגובה למשתמש ===
+    msg = bot.reply_to(m, f"🔎 מחפש: <b>{query_he}</b>...", parse_mode="HTML")
     bot.send_chat_action(m.chat.id, "typing")
 
     try:
@@ -153,23 +171,21 @@ def handler(m):
         time.sleep(0.3)
         bot.send_chat_action(m.chat.id, "typing")
         
-        # שליפת נתונים נוספים לניתוח
         price = p.get("target_sale_price")
         rating = p.get("evaluate_rate", "4.8")
-
+        
         ai_result = analyze_with_ai(query_he, p["product_title"], price, rating)
         
         if ai_result.get("valid"):
             p["display_title"] = ai_result.get("title")
-            p["display_desc"] = ai_result.get("desc") # התיאור החדש!
+            p["display_desc"] = ai_result.get("desc")
             final_products.append(p)
-            print(f"✅ Approved: {p['display_title']}")
 
     if not final_products and raw_products:
-        final_products = raw_products[:2] 
+        final_products = raw_products[:2]
         for p in final_products: 
             p["display_title"] = p["product_title"][:40]
-            p["display_desc"] = "מוצר פופולרי מאליאקספרס"
+            p["display_desc"] = "זמין לרכישה"
 
     if not final_products:
         bot.edit_message_text("🛑 לא נמצאו מוצרים.", m.chat.id, msg.message_id)
@@ -178,33 +194,33 @@ def handler(m):
     bot.delete_message(m.chat.id, msg.message_id)
     
     images = []
-    text = f"🛍️ **תוצאות עבור: {query_he}**\n\n"
+    text = f"🛍️ <b>תוצאות עבור: {escape_html(query_he)}</b>\n\n"
     kb = types.InlineKeyboardMarkup()
 
     for i, p in enumerate(final_products):
         price = p.get("target_sale_price")
-        # הוספתי כאן את הנתונים החסרים:
-        rating = p.get("evaluate_rate", "4.9") 
+        rating = p.get("evaluate_rate", "4.9")
         orders = p.get("last_volume", "100+")
-        
         link = get_short_link(p.get("product_detail_url"))
         if not link: continue
 
         images.append(p.get("product_main_image_url"))
         
-        # === עיצוב ההודעה המלא ===
-        text += f"{i+1}. 🥇 {p['display_title']}\n"
-        text += f"ℹ️ {p['display_desc']}\n"  # התיאור בעברית
-        text += f"💰 {price}₪ | ⭐ {rating} | 🛒 {orders}\n" # הנתונים
+        title = escape_html(str(p['display_title']))
+        desc = escape_html(str(p['display_desc']))
+        
+        text += f"{i+1}. 🥇 <b>{title}</b>\n"
+        text += f"ℹ️ <i>{desc}</i>\n"
+        text += f"💰 {price}₪ | ⭐ {rating} | 🛒 {orders}\n"
         text += f"{link}\n\n"
         
         kb.add(types.InlineKeyboardButton(f"🛍️ מוצר {i+1}", url=link))
 
     if images:
-        try: bot.send_photo(m.chat.id, create_collage(images), caption=text, parse_mode="Markdown", reply_markup=kb)
-        except: bot.send_message(m.chat.id, text, parse_mode="Markdown", reply_markup=kb)
+        try: bot.send_photo(m.chat.id, create_collage(images), caption=text, parse_mode="HTML", reply_markup=kb)
+        except: bot.send_message(m.chat.id, text, parse_mode="HTML", reply_markup=kb)
     else:
-        bot.send_message(m.chat.id, text, parse_mode="Markdown", reply_markup=kb)
+        bot.send_message(m.chat.id, text, parse_mode="HTML", reply_markup=kb)
 
-print("🚀 Full Feature Bot Running...")
+print("🚀 Bot Running (Production)...")
 bot.infinity_polling(timeout=20, long_polling_timeout=10)
