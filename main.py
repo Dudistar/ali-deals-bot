@@ -1,6 +1,8 @@
 # ==========================================
-# DrDeals Premium – FINAL PRODUCTION (With Spy & AI)
+# DrDeals Premium – THE COMPLETE INTEGRATION
 # ==========================================
+# כולל: הבלש (Spy), בינה מלאכותית (AI), פרטים עשירים, יציבות HTML, ואבטחה.
+
 import telebot
 import requests
 import time
@@ -18,10 +20,9 @@ from requests.packages.urllib3.util.retry import Retry
 from deep_translator import GoogleTranslator
 
 # ==========================================
-# 👮 הגדרות הבלש
+# 👮 הגדרות הבלש (המלשינון)
 # ==========================================
-# הנה המספר שלך - הבוט ישלח לכאן את הדיווחים
-ADMIN_ID = 173837076
+ADMIN_ID = 173837076  # המספר שלך לקבלת התראות
 
 # ==========================================
 # 🔑 טעינת מפתח מאובטחת
@@ -59,12 +60,14 @@ session.mount('https://', adapter)
 # 🧠 פונקציות עזר (ניקוי ו-AI)
 # ==========================================
 def escape_html(text):
+    """מונע קריסות כשיש תווים מיוחדים בשם המוצר"""
     if not text: return ""
     return text.replace("<", "&lt;").replace(">", "&gt;").replace("&", "&amp;")
 
 def analyze_with_ai(user_query, product_title, price, rating):
+    """המוח: מחליט אם המוצר תואם, וכותב כותרת ותיאור"""
     if not HAS_AI:
-        return {"valid": True, "title": product_title[:50], "desc": "מוצר פופולרי"}
+        return {"valid": True, "title": product_title[:50], "desc": "מוצר פופולרי מאליאקספרס"}
 
     prompt = f"""
     Task: Shopping Assistant.
@@ -82,7 +85,7 @@ def analyze_with_ai(user_query, product_title, price, rating):
         text = response.text.replace("```json", "").replace("```", "").strip()
         return json.loads(text)
     except:
-        return {"valid": True, "title": product_title[:50], "desc": "מוצר מומלץ"}
+        return {"valid": True, "title": product_title[:50], "desc": "מוצר מומלץ ואיכותי"}
 
 # ==========================================
 # 🔧 תשתית אליאקספרס
@@ -147,7 +150,7 @@ def handler(m):
     if not m.text.startswith("חפש לי"): return
     query_he = m.text.replace("חפש לי","").strip()
     
-    # === דיווח למנהל (Spy) ===
+    # === 1. הבלש (Spy) ===
     try:
         user = m.from_user
         info = f"👤 <b>משתמש:</b> {user.first_name} (@{user.username})\n🔍 <b>חיפש:</b> {query_he}"
@@ -155,22 +158,24 @@ def handler(m):
     except Exception as e:
         print(f"Spy Error: {e}")
 
-    # === תגובה למשתמש ===
-    msg = bot.reply_to(m, f"🔎 מחפש: <b>{query_he}</b>...", parse_mode="HTML")
+    # === 2. חיווי למשתמש ===
+    msg = bot.reply_to(m, f"🔎 מחפש את הטובים ביותר עבור: <b>{query_he}</b>...", parse_mode="HTML")
     bot.send_chat_action(m.chat.id, "typing")
 
     try:
         query_en = GoogleTranslator(source='auto', target='en').translate(query_he)
     except: query_en = query_he
 
+    # === 3. משיכה וסינון ===
     raw_products = get_ali_products(query_en)
-    
     final_products = []
+    
     for p in raw_products:
         if len(final_products) >= 4: break
-        time.sleep(0.3)
+        time.sleep(0.3) # השהייה קטנה למניעת עומס
         bot.send_chat_action(m.chat.id, "typing")
         
+        # איסוף נתונים ל-AI ולתצוגה
         price = p.get("target_sale_price")
         rating = p.get("evaluate_rate", "4.8")
         
@@ -180,17 +185,20 @@ def handler(m):
             p["display_title"] = ai_result.get("title")
             p["display_desc"] = ai_result.get("desc")
             final_products.append(p)
+            print(f"✅ Approved: {p['display_title']}")
 
+    # מנגנון גיבוי: אם לא נמצא כלום, מביאים את ה-2 הכי רלוונטיים (כדי לא להחזיר ריק)
     if not final_products and raw_products:
         final_products = raw_products[:2]
         for p in final_products: 
             p["display_title"] = p["product_title"][:40]
-            p["display_desc"] = "זמין לרכישה"
+            p["display_desc"] = "זמין במלאי"
 
     if not final_products:
-        bot.edit_message_text("🛑 לא נמצאו מוצרים.", m.chat.id, msg.message_id)
+        bot.edit_message_text("🛑 לא נמצאו מוצרים תואמים.", m.chat.id, msg.message_id)
         return
 
+    # === 4. בניית התשובה העשירה ===
     bot.delete_message(m.chat.id, msg.message_id)
     
     images = []
@@ -201,14 +209,17 @@ def handler(m):
         price = p.get("target_sale_price")
         rating = p.get("evaluate_rate", "4.9")
         orders = p.get("last_volume", "100+")
+        
         link = get_short_link(p.get("product_detail_url"))
         if not link: continue
 
         images.append(p.get("product_main_image_url"))
         
+        # שימוש ב-HTML בטוח למניעת קריסות
         title = escape_html(str(p['display_title']))
         desc = escape_html(str(p['display_desc']))
         
+        # פורמט ההודעה המלא והעשיר
         text += f"{i+1}. 🥇 <b>{title}</b>\n"
         text += f"ℹ️ <i>{desc}</i>\n"
         text += f"💰 {price}₪ | ⭐ {rating} | 🛒 {orders}\n"
@@ -217,10 +228,13 @@ def handler(m):
         kb.add(types.InlineKeyboardButton(f"🛍️ מוצר {i+1}", url=link))
 
     if images:
-        try: bot.send_photo(m.chat.id, create_collage(images), caption=text, parse_mode="HTML", reply_markup=kb)
-        except: bot.send_message(m.chat.id, text, parse_mode="HTML", reply_markup=kb)
+        try: 
+            bot.send_photo(m.chat.id, create_collage(images), caption=text, parse_mode="HTML", reply_markup=kb)
+        except Exception as e:
+            print(f"Error sending photo: {e}")
+            bot.send_message(m.chat.id, text, parse_mode="HTML", reply_markup=kb)
     else:
         bot.send_message(m.chat.id, text, parse_mode="HTML", reply_markup=kb)
 
-print("🚀 Bot Running (Production)...")
+print("🚀 DrDeals FULLY INTEGRATED is running...")
 bot.infinity_polling(timeout=20, long_polling_timeout=10)
