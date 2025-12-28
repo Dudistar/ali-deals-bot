@@ -1,5 +1,5 @@
 # ==========================================
-# DrDeals Premium – ANTI-SPAM EDITION 🛡️
+# DrDeals Premium – PRODUCTION VERSION (AI Powered)
 # ==========================================
 import telebot
 import requests
@@ -15,22 +15,29 @@ from telebot import types
 from PIL import Image, ImageDraw
 from requests.adapters import HTTPAdapter
 from requests.packages.urllib3.util.retry import Retry
+from deep_translator import GoogleTranslator
 
 # ==========================================
-# ⚙️ בדיקה שהמפתח קיים בשרת
+# 🔑 ניהול מפתח חכם (גיבוי כפול)
 # ==========================================
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-HAS_AI = False
-if GEMINI_API_KEY:
-    try:
-        genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-pro')
-        HAS_AI = True
-        print("✅ AI Connected!")
-    except: pass
+# 1. מנסה לקחת מהשרת
+KEY = os.environ.get("GEMINI_API_KEY")
+
+# 2. אם אין בשרת, משתמש במפתח שסיפקת כגיבוי קשיח
+if not KEY:
+    KEY = "AIzaSyBzR-46-B13sdh1UIPVM2hOJDjIR_8ZQ-4"
+
+try:
+    genai.configure(api_key=KEY)
+    model = genai.GenerativeModel('gemini-pro')
+    HAS_AI = True
+    print("✅ AI Connected Successfully!")
+except Exception as e:
+    print(f"⚠️ AI Error: {e}")
+    HAS_AI = False
 
 # ==========================================
-# ⚙️ הגדרות הבוט
+# ⚙️ הגדרות
 # ==========================================
 BOT_TOKEN = "8575064945:AAH_2WmHMH25TMFvt4FM6OWwfqFcDAaqCPw"
 APP_KEY = "523460"
@@ -45,51 +52,36 @@ adapter = HTTPAdapter(max_retries=Retry(connect=3, backoff_factor=1))
 session.mount('https://', adapter)
 
 # ==========================================
-# 🧠 המוח: בדיקת רלוונטיות קשוחה
+# 🧠 המוח: ניתוח מוצר (בלי רשימות חסימה!)
 # ==========================================
-def is_relevant(user_query_en, product_title):
+def analyze_product(user_query, product_title, price):
     """
-    הפונקציה שמונעת זבל.
-    אם חיפשתי 'Drone' והכותרת לא מכילה את המילה - זה עף.
+    שולח ל-AI כדי להחליט אם המוצר מתאים ולכתוב כותרת.
     """
-    q_words = user_query_en.lower().split()
-    title_lower = product_title.lower()
-    
-    # בדיקה 1: מילים אסורות גלובליות (כבלים, ניירות, שקיות כביסה)
-    spam_words = ["organizer", "cable winder", "disposable", "paper", "towel", "washing bag", "hook", "loop"]
-    if any(s in title_lower for s in spam_words):
-        return False
-
-    # בדיקה 2: האם מילת המפתח קיימת?
-    # לפחות מילה אחת משמעותית (מעל 3 אותיות) מהחיפוש חייבת להופיע בכותרת
-    found_match = False
-    for word in q_words:
-        if len(word) > 2 and word in title_lower:
-            found_match = True
-            break
-    
-    return found_match
-
-def analyze_with_ai(user_query, product_title, price):
-    # אם יש AI, הוא יעשה עבודה טובה יותר בניסוח הכותרת
     if not HAS_AI:
         return {"valid": True, "title": product_title[:50]}
 
     prompt = f"""
-    User searched: "{user_query}"
+    Acting as a shopping assistant.
+    User Search: "{user_query}"
     Found Product: "{product_title}"
+    Price: {price} ILS.
     
     Task:
-    1. Check if product matches user intent. (If User wants 'Drone' and product is 'Cable' -> INVALID).
-    2. Write a SHORT Hebrew title (max 7 words).
+    1. RELEVANCE CHECK: Is the product logicallly related?
+       - Search: "T-Shirt for men". Product: "Cotton Summer Tee" -> VALID.
+       - Search: "T-Shirt". Product: "Plastic Hanger" -> INVALID.
+    2. WRITING: If valid, write a clean Hebrew title (max 6 words).
     
     Output JSON: {{"valid": true, "title": "..."}}
     """
+    
     try:
         response = model.generate_content(prompt)
         text = response.text.replace("```json", "").replace("```", "").strip()
         return json.loads(text)
     except:
+        # במקרה של שגיאה ב-AI, ברירת המחדל היא לאשר (כדי לא להחזיר ריק)
         return {"valid": True, "title": product_title[:50]}
 
 # ==========================================
@@ -100,14 +92,13 @@ def generate_sign(params):
     return hashlib.md5(s.encode()).hexdigest().upper()
 
 def get_ali_products(query):
-    # שינוי קריטי: min_sale_price מוגדר ל-50 כדי לסנן את הכבלים ב-2 שקל
+    # מחיר מינימום נמוך (5 ש"ח) כדי לא לפספס חולצות זולות
     params = {
         "app_key": APP_KEY, "method": "aliexpress.affiliate.product.query",
         "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "format": "json",
         "sign_method": "md5", "v": "2.0", "partner_id": "top-autopilot",
         "keywords": query, "target_currency": "ILS", "ship_to_country": "IL",
-        "sort": "LAST_VOLUME_DESC", "page_size": "20", 
-        "min_sale_price": "20" # חוסם את הזבל הזול
+        "sort": "LAST_VOLUME_DESC", "page_size": "15", "min_sale_price": "5"
     }
     params["sign"] = generate_sign(params)
     try:
@@ -158,63 +149,57 @@ def handler(m):
     if not m.text.startswith("חפש לי"): return
     query_he = m.text.replace("חפש לי","").strip()
     
-    msg = bot.reply_to(m, f"🕵️‍♂️ בודק: '{query_he}'...\n🛡️ מפעיל מסנן ספאם (כדי לא להביא כבלים ומגבות)...")
+    # שלב 1: חיווי
+    msg = bot.reply_to(m, f"🤖 ה-AI מנתח בקשה: '{query_he}'...\n🛡️ סורק את המאגר (נא להמתין)...")
     bot.send_chat_action(m.chat.id, "typing")
 
-    # 1. תרגום (נסיון חכם)
+    # תרגום לחיפוש (לא חובה AI לזה, גוגל מספיק טוב ומהיר יותר לשלב הזה)
     try:
-        # אם יש AI, נשתמש בו לתרגום מדויק
-        if HAS_AI:
-            trans_prompt = f"Translate '{query_he}' to English for Shopping Search. Return ONLY the English words."
-            query_en = model.generate_content(trans_prompt).text.strip()
-        else:
-            from deep_translator import GoogleTranslator
-            query_en = GoogleTranslator(source='auto', target='en').translate(query_he)
+        query_en = GoogleTranslator(source='auto', target='en').translate(query_he)
     except: query_en = query_he
 
-    print(f"DEBUG: Searching Query -> '{query_en}'")
+    print(f"Searching: {query_en}")
 
-    # 2. משיכת מוצרים
+    # שלב 2: משיכה גולמית
     raw_products = get_ali_products(query_en)
     
-    # 3. סינון קשוח
+    # שלב 3: סינון AI חכם
     final_products = []
     
     for p in raw_products:
         if len(final_products) >= 4: break
         
-        title = p["product_title"]
+        # השהייה קטנטנה למניעת עומס
+        time.sleep(0.3)
+        bot.send_chat_action(m.chat.id, "typing")
         
-        # שלב א': שומר הסף (הבדיקה המכנית)
-        # אם ביקשנו Drone ואין Drone בכותרת - זה עף מיד!
-        if not is_relevant(query_en, title):
-            print(f"🗑️ Junk Removed: {title[:20]}...")
-            continue
-
-        # שלב ב': AI (אם קיים)
-        if HAS_AI:
-            ai_result = analyze_with_ai(query_he, title, p["target_sale_price"])
-            if not ai_result.get("valid"):
-                continue
+        # בדיקת AI
+        ai_result = analyze_product(query_he, p["product_title"], p["target_sale_price"])
+        
+        if ai_result.get("valid"):
             p["display_title"] = ai_result.get("title")
-        else:
-            p["display_title"] = title[:50] # כותרת רגילה אם אין AI
+            final_products.append(p)
+            print(f"✅ Approved: {p['display_title']}")
 
-        final_products.append(p)
+    # מנגנון חירום: אם ה-AI סינן הכל (נדיר), נחזיר את ה-2 הכי רלוונטיים כדי לא להחזיר ריק
+    if not final_products and raw_products:
+        final_products = raw_products[:2]
+        for p in final_products: p["display_title"] = p["product_title"][:50]
 
     if not final_products:
-        bot.edit_message_text(f"🛑 לא מצאתי תוצאות מדויקות ל-'{query_he}'.\n(העדפתי לא להציג כלום מאשר להציג מוצרים לא קשורים).", m.chat.id, msg.message_id)
+        bot.edit_message_text("🛑 לא נמצאו מוצרים תואמים במאגר.", m.chat.id, msg.message_id)
         return
 
-    # 4. הצגה
+    # שלב 4: הצגה
     bot.delete_message(m.chat.id, msg.message_id)
     
     images = []
-    text = f"🤖 **הבחירות החכמות עבורך:**\n\n"
+    text = f"🤖 **תוצאות AI עבור: {query_he}**\n\n"
     kb = types.InlineKeyboardMarkup()
 
     for i, p in enumerate(final_products):
         price = p.get("target_sale_price")
+        # השגת לינק מקוצר
         link = get_short_link(p.get("product_detail_url"))
         if not link: continue
 
@@ -222,7 +207,7 @@ def handler(m):
         
         text += f"{i+1}. 🥇 {p['display_title']}\n"
         text += f"💰 מחיר: {price}₪\n"
-        text += f"{link}\n\n"
+        text += f"{link}\n\n" # הקישור פתוח וברור
         
         kb.add(types.InlineKeyboardButton(f"🛍️ מוצר {i+1}", url=link))
 
@@ -232,5 +217,5 @@ def handler(m):
     else:
         bot.send_message(m.chat.id, text, parse_mode="Markdown", reply_markup=kb)
 
-print("🚀 Anti-Spam Bot Running...")
-bot.infinity_polling(timeout=10, long_polling_timeout=5)
+print("🚀 Bot Running (Final Production Version)...")
+bot.infinity_polling(timeout=20, long_polling_timeout=10)
