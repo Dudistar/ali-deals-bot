@@ -1,5 +1,5 @@
 # ==========================================
-# DrDeals Premium – STABILITY FIX (Based on Logs)
+# DrDeals Premium – FINAL PROFESSIONAL EDITION
 # ==========================================
 import telebot
 import requests
@@ -10,7 +10,7 @@ import io
 import sys
 import os
 import json
-import html  # <--- קריטי למניעת הקריסה בלוגים
+import html
 from telebot import types
 from PIL import Image, ImageDraw, ImageFont
 from requests.adapters import HTTPAdapter
@@ -19,93 +19,69 @@ from deep_translator import GoogleTranslator
 import google.generativeai as genai
 
 # ==========================================
-# 👮 הגדרות מנהל
+# 👮 הגדרות
 # ==========================================
 ADMIN_ID = 173837076
-
-# ==========================================
-# 🔑 הגדרות AI (חייב להיות ב-Environment Variables)
-# ==========================================
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-
-HAS_AI = False
-if GEMINI_API_KEY:
-    try:
-        genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-pro')
-        HAS_AI = True
-        print("✅ AI Connected via Server Variables")
-    except Exception as e:
-        print(f"❌ AI Error: {e}")
-else:
-    print("⚠️ WARNING: No GEMINI_API_KEY found. Bot will run in 'Dumb Mode' (No filters).")
-
-# ==========================================
-# ⚙️ הגדרות בוט ואליאקספרס
-# ==========================================
 BOT_TOKEN = "8575064945:AAH_2WmHMH25TMFvt4FM6OWwfqFcDAaqCPw"
 APP_KEY = "523460"
 APP_SECRET = "Co7bNfYfqlu8KTdj2asXQV78oziICQEs"
 TRACKING_ID = "DrDeals"
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s', handlers=[logging.StreamHandler(sys.stdout)])
+# ==========================================
+# 🔑 AI
+# ==========================================
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+HAS_AI = False
+
+if GEMINI_API_KEY:
+    try:
+        genai.configure(api_key=GEMINI_API_KEY)
+        model = genai.GenerativeModel("gemini-pro")
+        HAS_AI = True
+        print("✅ AI connected")
+    except Exception as e:
+        print("❌ AI failed:", e)
+
+# ==========================================
+# ⚙️ מערכת
+# ==========================================
+logging.basicConfig(level=logging.INFO, handlers=[logging.StreamHandler(sys.stdout)])
 bot = telebot.TeleBot(BOT_TOKEN)
+
 session = requests.Session()
 adapter = HTTPAdapter(max_retries=Retry(connect=3, backoff_factor=1))
-session.mount('https://', adapter)
+session.mount("https://", adapter)
 
 # ==========================================
-# 🛡️ פונקציית ההגנה (התיקון לקריסה בלוג)
+# 🛡️ ניקוי טקסט
 # ==========================================
-def clean_text(text):
-    """
-    מנקה את הטקסט מתווים שגורמים לקריסה (Error 400).
-    חובה להשתמש בזה בכל פעם ששולחים טקסט דינמי לטלגרם ב-HTML.
-    """
-    if not text: return ""
-    return html.escape(str(text))
+def safe(text):
+    return html.escape(str(text)) if text else ""
 
 # ==========================================
-# 🎨 מנוע גרפי (קולאז' 2x2 עם מספרים)
+# 🎨 קולאז'
 # ==========================================
-def create_collage(urls):
-    images = []
-    for u in urls[:4]:
-        try:
-            resp = session.get(u, timeout=4)
-            img = Image.open(io.BytesIO(resp.content)).convert("RGB").resize((500, 500))
-            images.append(img)
-        except:
-            images.append(Image.new("RGB", (500, 500), "white"))
-    
-    while len(images) < 4:
-        images.append(Image.new("RGB", (500, 500), "white"))
-
+def create_collage(images):
     canvas = Image.new("RGB", (1000, 1000), "white")
-    positions = [(0, 0), (500, 0), (0, 500), (500, 500)]
-    for i, pos in enumerate(positions):
-        canvas.paste(images[i], pos)
-
     draw = ImageDraw.Draw(canvas)
-    
-    # נסיון לטעון פונט, אם אין - משתמש בברירת מחדל
+
     try:
-        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 80)
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 90)
     except:
         font = ImageFont.load_default()
 
-    # מיקומים למספרים
-    text_positions = [(30, 30), (530, 30), (30, 530), (530, 530)]
-    
-    for i, (x, y) in enumerate(text_positions):
-        # ריבוע צהוב
-        draw.rectangle([x, y, x+100, y+100], fill="#FFD700", outline="black", width=4)
-        # מספר
-        num = str(i + 1)
-        # כיוונון מיקום הטקסט
-        tx, ty = x + 30, y + 10
-        if "default" in str(font): tx, ty = x + 40, y + 30
-        draw.text((tx, ty), num, fill="black", font=font, font_size=60)
+    positions = [(0,0),(500,0),(0,500),(500,500)]
+
+    for i, url in enumerate(images[:4]):
+        try:
+            img = Image.open(io.BytesIO(session.get(url, timeout=5).content)).resize((500,500))
+        except:
+            img = Image.new("RGB",(500,500),"#eee")
+        canvas.paste(img, positions[i])
+
+        x,y = positions[i]
+        draw.ellipse([x+20,y+20,x+140,y+140], fill="#FFD700", outline="black", width=5)
+        draw.text((x+55,y+35), str(i+1), fill="black", font=font)
 
     out = io.BytesIO()
     canvas.save(out, "JPEG", quality=95)
@@ -113,150 +89,148 @@ def create_collage(urls):
     return out
 
 # ==========================================
-# 🧠 AI Logic
+# 🧠 AI תיאור בלבד (לא סינון!)
 # ==========================================
-def analyze_with_ai(user_query, product_title, price):
+def ai_describe(query, title):
     if not HAS_AI:
-        return {"valid": True, "title": product_title[:40], "desc": "מוצר פופולרי"}
+        return title[:35], "מוצר פופולרי בקטגוריה"
 
-    # פרומפט קצר וממוקד למהירות
     prompt = f"""
-    Filter this AliExpress product.
-    User wants: "{user_query}"
-    Product: "{product_title}"
-    Price: {price}
-    
-    1. RELEVANCE: Is it EXACTLY what user wants? (Accessory/Part = INVALID).
-    2. HEBREW: Rewrite title (max 5 words) + Sales pitch (max 5 words).
-    
-    JSON format: {{"valid": true, "title": "...", "desc": "..."}}
+    User searched: "{query}"
+    Product: "{title}"
+
+    Rewrite into Hebrew:
+    1. Short title (max 5 words)
+    2. Short benefit (max 6 words)
+
+    Return JSON:
+    {{"title":"...","desc":"..."}}
     """
+
     try:
-        response = model.generate_content(prompt)
-        text = response.text.replace("```json", "").replace("```", "").strip()
-        return json.loads(text)
+        r = model.generate_content(prompt)
+        txt = r.text.replace("```json","").replace("```","").strip()
+        data = json.loads(txt)
+        return data.get("title", title[:30]), data.get("desc","מוצר מומלץ")
     except:
-        return {"valid": True, "title": product_title[:40], "desc": "מוצר מומלץ"}
+        return title[:30], "מוצר מומלץ"
 
 # ==========================================
-# 🔧 אליאקספרס
+# 🔧 AliExpress
 # ==========================================
-def generate_sign(params):
-    s = APP_SECRET + ''.join(f"{k}{v}" for k, v in sorted(params.items())) + APP_SECRET
+def sign(params):
+    s = APP_SECRET + "".join(f"{k}{v}" for k,v in sorted(params.items())) + APP_SECRET
     return hashlib.md5(s.encode()).hexdigest().upper()
 
-def get_ali_products(query):
-    # הסרתי את min_sale_price כדי לא לפספס מציאות, ה-AI יסנן זבל
+def ali_search(q):
     params = {
-        "app_key": APP_KEY, "method": "aliexpress.affiliate.product.query",
-        "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "format": "json",
-        "sign_method": "md5", "v": "2.0", "partner_id": "top-autopilot",
-        "keywords": query, "target_currency": "ILS", "ship_to_country": "IL",
-        "sort": "LAST_VOLUME_DESC", "page_size": "40"
+        "app_key": APP_KEY,
+        "method": "aliexpress.affiliate.product.query",
+        "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'),
+        "format": "json",
+        "sign_method": "md5",
+        "v": "2.0",
+        "partner_id": "top-autopilot",
+        "keywords": q,
+        "target_currency": "ILS",
+        "ship_to_country": "IL",
+        "sort": "LAST_VOLUME_DESC",
+        "page_size": "40"
     }
-    params["sign"] = generate_sign(params)
-    try:
-        r = session.post("https://api-sg.aliexpress.com/sync", data=params, timeout=10)
-        data = r.json()
-        if "aliexpress_affiliate_product_query_response" not in data: return []
-        products = data["aliexpress_affiliate_product_query_response"]["resp_result"]["result"]["products"]["product"]
-        return products if isinstance(products, list) else [products]
-    except: return []
+    params["sign"] = sign(params)
 
-def get_short_link(url):
-    if not url: return None
+    try:
+        r = session.post("https://api-sg.aliexpress.com/sync", data=params, timeout=12).json()
+        p = r["aliexpress_affiliate_product_query_response"]["resp_result"]["result"]["products"]["product"]
+        return p if isinstance(p,list) else [p]
+    except:
+        return []
+
+def short_link(url):
+    if not url: return ""
     clean = url.split("?")[0]
     params = {
-        "app_key": APP_KEY, "method": "aliexpress.affiliate.link.generate",
-        "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'), "format": "json",
-        "sign_method": "md5", "v": "2.0", "partner_id": "top-autopilot",
-        "promotion_link_type": "0", "source_values": clean, "tracking_id": TRACKING_ID
+        "app_key": APP_KEY,
+        "method": "aliexpress.affiliate.link.generate",
+        "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'),
+        "format": "json",
+        "sign_method": "md5",
+        "v": "2.0",
+        "partner_id": "top-autopilot",
+        "promotion_link_type": "0",
+        "source_values": clean,
+        "tracking_id": TRACKING_ID
     }
-    params["sign"] = generate_sign(params)
+    params["sign"] = sign(params)
+
     try:
-        r = session.post("https://api-sg.aliexpress.com/sync", data=params, timeout=5).json()
+        r = session.post("https://api-sg.aliexpress.com/sync", data=params, timeout=6).json()
         link = r["aliexpress_affiliate_link_generate_response"]["resp_result"]["result"]["promotion_links"]["promotion_link"][0]
         return link.get("promotion_short_link") or link.get("promotion_link")
-    except: return clean
+    except:
+        return clean
 
 # ==========================================
 # 🚀 הבוט
 # ==========================================
-@bot.message_handler(func=lambda m: True)
-def handler(m):
-    if not m.text.startswith("חפש לי"): return
+@bot.message_handler(func=lambda m: m.text and m.text.startswith("חפש לי"))
+def handle(m):
     query_he = m.text.replace("חפש לי","").strip()
-    
-    # שליחת הודעה למנהל (Spy)
+
+    # 🕵️ דיווח מנהל
     try:
-        # שימוש ב-clean_text גם כאן כדי למנוע קריסה אם למשתמש יש שם מוזר
-        user_info = f"{clean_text(m.from_user.first_name)} (@{clean_text(m.from_user.username)})"
-        bot.send_message(ADMIN_ID, f"🔔 חיפוש: {clean_text(query_he)}\n👤 {user_info}")
-    except: pass
+        bot.send_message(
+            ADMIN_ID,
+            f"🔎 חיפוש חדש\n👤 {safe(m.from_user.first_name)} (@{safe(m.from_user.username)})\n📦 {safe(query_he)}"
+        )
+    except:
+        pass
 
-    # הודעת סטטוס
-    status_msg = bot.reply_to(m, f"🔎 מחפש: <b>{clean_text(query_he)}</b>...", parse_mode="HTML")
-    bot.send_chat_action(m.chat.id, "upload_photo")
+    status = bot.reply_to(m, f"🕵️‍♂️ מחפש ביסודיות:\n<b>{safe(query_he)}</b>", parse_mode="HTML")
 
-    # תרגום
+    time.sleep(1.5)
+
     try:
-        query_en = GoogleTranslator(source='auto', target='en').translate(query_he)
-    except: query_en = query_he
+        query_en = GoogleTranslator(source="auto", target="en").translate(query_he)
+    except:
+        query_en = query_he
 
-    raw_products = get_ali_products(query_en)
-    final_products = []
-    
-    # סינון
-    for p in raw_products:
-        if len(final_products) >= 4: break
-        
-        # דילוג על זבל מוחלט (בלי תמונה או מחיר)
-        if not p.get("product_main_image_url") or not p.get("target_sale_price"):
-            continue
+    time.sleep(1.5)
 
-        # AI
-        ai_res = analyze_with_ai(query_he, p["product_title"], p["target_sale_price"])
-        
-        if ai_res.get("valid"):
-            p["display_title"] = ai_res.get("title")
-            p["display_desc"] = ai_res.get("desc")
-            final_products.append(p)
-
-    if not final_products:
-        bot.delete_message(m.chat.id, status_msg.message_id)
-        bot.send_message(m.chat.id, "😕 לא מצאתי תוצאות איכותיות.")
+    products = ali_search(query_en)
+    if not products:
+        bot.edit_message_text("❌ לא נמצאו תוצאות.", m.chat.id, status.message_id)
         return
 
-    # קולאז'
-    collage = create_collage([p.get("product_main_image_url") for p in final_products])
+    final = []
+    for p in products:
+        if len(final) == 4: break
+        if not p.get("product_main_image_url"): continue
+        title, desc = ai_describe(query_he, p["product_title"])
+        p["h_title"] = title
+        p["h_desc"] = desc
+        final.append(p)
 
-    # טקסט (עם הגנה מקריסות!)
-    text = f"🛍️ <b>תוצאות עבור: {clean_text(query_he)}</b>\n\n"
+    collage = create_collage([p["product_main_image_url"] for p in final])
+
+    text = f"🏆 <b>הבחירות עבור:</b> {safe(query_he)}\n\n"
     kb = types.InlineKeyboardMarkup()
 
-    for i, p in enumerate(final_products):
-        link = get_short_link(p.get("product_detail_url"))
-        price = p.get("target_sale_price")
-        rating = p.get("evaluate_rate", "4.5")
-        orders = p.get("last_volume", "100+")
-        
-        # שימוש ב-clean_text כדי למנוע את Error 400
-        safe_title = clean_text(p['display_title'])
-        safe_desc = clean_text(p['display_desc'])
+    for i,p in enumerate(final):
+        link = short_link(p.get("product_detail_url"))
+        price = p.get("target_sale_price","?")
+        rating = p.get("evaluate_rate","?")
+        orders = p.get("last_volume","?")
 
-        text += f"<b>{i+1}. {safe_title}</b>\n"
-        text += f"ℹ️ <i>{safe_desc}</i>\n"
-        text += f"💰 {price}₪  |  ⭐ {rating}  |  🛒 {orders}\n"
-        text += f"🔗 {link}\n\n" # קישור גולמי
+        text += f"<b>{i+1}. {safe(p['h_title'])}</b>\n"
+        text += f"📝 {safe(p['h_desc'])}\n"
+        text += f"💰 {price}₪ | ⭐ {rating} | 🛒 {orders}\n"
+        text += f"🔗 {link}\n\n"
 
-        kb.add(types.InlineKeyboardButton(f"🛒 קנה מוצר {i+1}", url=link))
+        kb.add(types.InlineKeyboardButton(f"🛒 לקנייה {i+1}", url=link))
 
-    bot.delete_message(m.chat.id, status_msg.message_id)
-    try:
-        # שליחה ב-HTML עם הגנות
-        bot.send_photo(m.chat.id, collage, caption=text, parse_mode="HTML", reply_markup=kb)
-    except Exception as e:
-        bot.send_message(m.chat.id, f"שגיאה בשליחה: {e}")
+    bot.delete_message(m.chat.id, status.message_id)
+    bot.send_photo(m.chat.id, collage, caption=text, parse_mode="HTML", reply_markup=kb)
 
-print("🚀 Bot Started (Log Fixes Applied)")
-bot.infinity_polling(timeout=25, long_polling_timeout=10)
+print("🚀 DrDeals FINAL running")
+bot.infinity_polling(timeout=30, long_polling_timeout=15)
